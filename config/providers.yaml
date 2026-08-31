@@ -120,8 +120,9 @@ providers:
     base_url: "https://api.deepseek.com"
     api_key_env: "DEEPSEEK_API_KEY"
     models:
-      - deepseek-chat
-      - deepseek-reasoner
+      - deepseek-v4-flash            # live 2026-08-31 via GET /models
+      - deepseek-v4-pro              # live 2026-08-31
+      - deepseek-v4-flash-vision-exp # live 2026-08-31
 
   # ── Cohere ──
   cohere:
