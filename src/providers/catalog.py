@@ -21,6 +21,80 @@ try:
 except ImportError:
     yaml = None
 
+# ---------------------------------------------------------------------------
+# Live model discovery (de-hardcoding model IDs)
+#
+# Model IDs rotate frequently (OpenCode Zen deprecates free IDs without
+# notice — e.g. ``hy3-free`` started returning 401 "not supported").  The
+# YAML ``models:`` lists are treated as an OFFLINE FALLBACK only: at load
+# time we query the provider's OpenAI-compatible GET /models endpoint and
+# merge live IDs into each slot, then validate tier routes against the
+# merged list so stale IDs never enter the gateway's failover chain.
+# ---------------------------------------------------------------------------
+
+_MODELS_ENDPOINTS = {
+    "opencode_free": "https://opencode.ai/zen/v1/models",
+    "groq": "https://api.groq.com/openai/v1/models",
+    "openrouter": "https://openrouter.ai/api/v1/models",
+    "nvidia_nim": "https://integrate.api.nvidia.com/v1/models",
+    "openai": "https://api.openai.com/v1/models",
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/models",
+    "deepseek": "https://api.deepseek.com/v1/models",
+}
+
+_DISCOVERY_TTL_S = 1800.0  # 30 min
+_DISCOVERY_TIMEOUT_S = 10.0
+_MAX_DISCOVERED_MODELS = 80
+
+import json as _json
+import threading as _threading
+import time as _time
+import urllib.request as _urlreq
+
+_disc_cache: dict[str, tuple[float, list[str]]] = {}
+_disc_lock = _threading.Lock()
+
+
+def _fetch_model_ids(provider_key: str, api_key: str) -> list[str]:
+    """GET {provider}/models and return the live model IDs ([] on any failure)."""
+    url = _MODELS_ENDPOINTS.get(provider_key)
+    if not url:
+        return []
+    headers = {"User-Agent": "AutonomousResearchAgent/1.0", "Accept": "application/json"}
+    # Zen free needs no key; everything else requires one
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    elif provider_key != "opencode_free":
+        return []
+    try:
+        req = _urlreq.Request(url, headers=headers)
+        with _urlreq.urlopen(req, timeout=_DISCOVERY_TIMEOUT_S) as resp:
+            payload = _json.loads(resp.read().decode("utf-8", errors="ignore"))
+        if isinstance(payload, dict) and "data" in payload:
+            return [str(m.get("id", "")) for m in payload["data"] if m.get("id")]
+        if isinstance(payload, list):
+            return [str(m.get("id", m) if isinstance(m, dict) else m) for m in payload]
+    except Exception:
+        pass
+    return []
+
+
+def _discovered_models(provider_key: str, api_key: str) -> list[str]:
+    """Live model IDs with a TTL cache; last-known-good survives outages."""
+    now = _time.time()
+    with _disc_lock:
+        cached = _disc_cache.get(provider_key)
+        if cached and now - cached[0] < _DISCOVERY_TTL_S:
+            return cached[1]
+    ids = _fetch_model_ids(provider_key, api_key)
+    with _disc_lock:
+        if ids:
+            _disc_cache[provider_key] = (now, ids)
+        elif cached:
+            return cached[1]  # keep last-known-good on discovery failure
+    return ids
+
+
 
 @dataclass
 class ProviderSlot:
@@ -159,6 +233,24 @@ def load_catalog(config_path: Optional[str] = None) -> CatalogConfig:
         slot._all_keys = api_keys
         cat.providers[key] = slot
 
+    # Live model discovery — merge remote IDs into each slot (config first).
+    # Failure-tolerant: on network error the YAML lists stand unchanged.
+    if os.getenv("PROVIDENCE_DISABLE_MODEL_DISCOVERY", "") != "1":
+        for key, slot in cat.providers.items():
+            try:
+                remote = _discovered_models(key, slot.api_key)[:_MAX_DISCOVERED_MODELS]
+            except Exception:
+                remote = []
+            if remote:
+                seen: set[str] = set()
+                merged: list[str] = []
+                for m in list(slot.models) + remote:
+                    if m and m not in seen:
+                        seen.add(m)
+                        merged.append(m)
+                slot.models = merged
+                slot._discovered_ok = True
+
     # Parse tiers
     tiers_raw = raw.get("tiers", {})
     for tier_name, routes in tiers_raw.items():
@@ -177,6 +269,42 @@ def load_catalog(config_path: Optional[str] = None) -> CatalogConfig:
                 ))
         if tier.routes:
             cat.tiers[tier_name] = tier
+
+    # Validate tier routes against live discovery: when a provider's /models
+    # responded, drop routes referencing IDs the provider no longer serves
+    # (e.g. a deprecated Zen free model that would 401 mid-run), and append
+    # newly discovered models that the static tiers do not know about yet.
+    for tier_name, tier in list(cat.tiers.items()):
+        if tier_name not in ("fast", "strong", "compare", "recency", "academic"):
+            continue  # thinker is Gemini-only and curated by design
+        validated: list[TierRoute] = []
+        seen_pairs: set[tuple[str, str]] = set()
+        for route in tier.routes:
+            slot = cat.providers.get(route.provider_name)
+            if slot is not None and getattr(slot, "_discovered_ok", False) and slot.models \
+                    and route.model not in slot.models:
+                continue  # stale ID — provider no longer serves it
+            pair = (route.provider_name, route.model)
+            if pair not in seen_pairs:
+                seen_pairs.add(pair)
+                validated.append(route)
+        # Surface newly discovered IDs (config may lag the provider catalog)
+        for provider_name in dict.fromkeys(r.provider_name for r in validated):
+            slot = cat.providers.get(provider_name)
+            if slot is None or not getattr(slot, "_discovered_ok", False):
+                continue
+            for model in slot.models:
+                pair = (provider_name, model)
+                if pair in seen_pairs:
+                    continue
+                if "free" in model.lower() or model == "big-pickle":
+                    seen_pairs.add(pair)
+                    validated.append(TierRoute(provider_name, model, len(validated) + 1))
+        if validated:
+            tier.routes = validated[:12]
+            cat.tiers[tier_name] = tier
+        else:
+            cat.tiers.pop(tier_name, None)
 
     # Ensure at least free tier routes if nothing is configured
     _ensure_fallback(cat)
@@ -202,7 +330,10 @@ def _ensure_fallback(cat: CatalogConfig) -> None:
         base_url="",  # empty → Zen
         api_key="",
         protocol="openai_chat",
-        models=["nemotron-3-ultra-free", "hy3-free", "deepseek-v4-flash-free", "big-pickle"],
+        # Offline fallback only — load_catalog() refreshes these live via
+        # GET /zen/v1/models when the network is available.
+        models=["nemotron-3-ultra-free", "nemotron-3.5-lightning-free",
+                "deepseek-v4-flash-free", "big-pickle"],
         is_default=True,
     )
     cat.providers["opencode_free"] = zen

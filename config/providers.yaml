@@ -2,11 +2,12 @@
 # Empty base_url → https://opencode.ai/zen/v1  (POST /chat/completions)
 # Empty api_key_env → no Authorization header
 #
-# Official free IDs (docs 2026-08-17 + live GET /zen/v1/models, no key):
-#   nemotron-3-ultra-free, hy3-free, nemotron-3.5-lightning-free,
-#   laguna-s-2.1-free, mimo-v2.5-free, deepseek-v4-flash-free, big-pickle
-# Paid Zen / Go (https://opencode.ai/zen/go/v1) need OPENCODE_API_KEY.
-# Stale IDs removed: longcat-2.0-free, ling-3.0-*-free, north-mini-code-free
+# Free IDs are DISCOVERED LIVE at runtime via GET /zen/v1/models (no key)
+# and merged/validated against this list — stale IDs are dropped and new
+# ones auto-added. Set PROVIDENCE_DISABLE_MODEL_DISCOVERY=1 to skip.
+# YAML list below is the offline fallback only (verified 2026-08-31).
+# Deprecated by provider (401 "not supported"): hy3-free,
+#   longcat-2.0-free, north-mini-code-free
 
 providers:
   # ── OpenCode Zen free (always available, no key) ──
@@ -17,12 +18,13 @@ providers:
     default: true
     models:
       - nemotron-3-ultra-free         # live 200 no-key, clean JSON
-      - hy3-free                      # live 200 no-key
       - nemotron-3.5-lightning-free   # live 200 no-key
       - laguna-s-2.1-free             # documented free; may 503
       - mimo-v2.5-free                # documented free; may 429
       - deepseek-v4-flash-free        # documented free; may 429
-      - big-pickle                    # documented free (reasoning)
+      - big-pickle                    # live free (reasoning)
+      - muse-spark-1.2-contributor-free  # live free (data-use tradeoff)
+      - ling-3.0-flash-fin-free          # live free
 
   # ── Groq (https://console.groq.com/docs/openai · /docs/models) ──
   # OpenAI-compatible base: https://api.groq.com/openai/v1
@@ -140,8 +142,6 @@ tiers:
     - provider: opencode_free
       model: nemotron-3-ultra-free
     - provider: opencode_free
-      model: hy3-free
-    - provider: opencode_free
       model: nemotron-3.5-lightning-free
     - provider: opencode_free
       model: laguna-s-2.1-free
@@ -153,8 +153,6 @@ tiers:
   strong:
     - provider: opencode_free
       model: nemotron-3-ultra-free
-    - provider: opencode_free
-      model: hy3-free
     - provider: opencode_free
       model: deepseek-v4-flash-free
     - provider: opencode_free
