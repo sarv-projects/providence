@@ -14,6 +14,7 @@ import json
 import re
 
 from src.llm import call_llm
+from src.jsonutil import parse_json_dict
 from src.state import ResearchState
 from .registry import register
 
@@ -197,9 +198,8 @@ Example outline entry:
   {{"title": "Historical Context", "queries": ["history of X", "origins of X"]}}"""
 
     result = call_llm(PLANNER_SYSTEM, prompt)
-    try:
-        plan = json.loads(result.strip().removeprefix("```json").removesuffix("```").strip())
-    except json.JSONDecodeError:
+    plan = parse_json_dict(result, default=None)
+    if not plan:
         plan = {
             "topic": state["query"],
             "subtopics": [],

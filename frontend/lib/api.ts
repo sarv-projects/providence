@@ -94,4 +94,6 @@ export type ProgressSnapshot = {
   thoughts?: { ts?: number; kind?: string; text?: string }[]
   off_topic?: boolean
   plan?: Record<string, unknown>
+  // STORM-style perspective lens set (scout output, names only)
+  perspectives?: string[]
 }

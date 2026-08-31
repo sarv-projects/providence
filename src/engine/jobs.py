@@ -34,6 +34,7 @@ class ResearchJob:
         self.pages_scanned = 0
         self.iterations = 0
         self.stage = "queued"
+        self.perspectives: list[str] = []
 
     def to_dict(self) -> dict:
         return {
@@ -63,6 +64,7 @@ class ResearchJob:
             "iterations": self.iterations,
             "report": (self.report or "")[:50000],
             "markdown_path": self.markdown_path,
+            "perspectives": list(self.perspectives[-12:]),
             "finished": self.status in ("complete", "error", "aborted"),
             "cancel_requested": self.cancel_requested,
         }

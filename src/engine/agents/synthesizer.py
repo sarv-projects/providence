@@ -13,6 +13,7 @@ import json
 import re
 
 from src.llm import call_llm_strong, call_llm
+from src.jsonutil import parse_json_dict, parse_json_list
 from src.rag.pipeline import retrieve_chunks
 from src.rag.hybrid import hybrid_retrieve
 from src.state import ResearchState, Section
@@ -83,14 +84,10 @@ Evaluation Matrix (if deep), Failure Modes (if deep), Conclusion, Sources.
 Example: [{{"title": "Introduction", "order": 0}}, ...]"""
 
     result = call_llm_strong(SYNTH_SYSTEM, prompt)
-    try:
-        outline = json.loads(result.strip().removeprefix("```json").removesuffix("```").strip())
-        if not isinstance(outline, list):
-            outline = [{"title": "Overview", "order": 0}, {"title": "Findings", "order": 1},
-                       {"title": "Sources", "order": 2}]
-    except json.JSONDecodeError:
+    outline = parse_json_list(result, default=None)
+    if not isinstance(outline, list):
         outline = [{"title": "Overview", "order": 0}, {"title": "Findings", "order": 1},
-                    {"title": "Sources", "order": 2}]
+                   {"title": "Sources", "order": 2}]
 
     # Ensure required deep sections exist
     titles_l = {str(s.get("title", "")).lower() for s in outline}
@@ -426,10 +423,13 @@ Return JSON:
             prompt,
             model="fast",
         )
-        cleaned = raw.strip().removeprefix("```json").removesuffix("```").strip()
-        critique = json.loads(cleaned)
+        critique = parse_json_dict(raw)
     except Exception:
         print("  Self-critique skipped (parse/LLM failure)")
+        return
+
+    if not critique:
+        print("  Self-critique skipped (empty parse)")
         return
 
     issues = critique.get("issues") or []

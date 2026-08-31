@@ -48,16 +48,20 @@ export default function VaultPage() {
         <div className="space-y-4">
           {error && <div className="notice notice-error">{error}</div>}
           {results.map((r, i) => (
-            <div key={i} className="bg-white dark:bg-gray-800 rounded-lg p-6 shadow border border-gray-200 dark:border-gray-700">
-              <h3 className="font-semibold text-lg text-gray-900 dark:text-gray-100 mb-1">
+            <div
+              key={i}
+              className="card-hover rounded-xl border p-6 shadow-sm"
+              style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
+            >
+              <h3 className="mb-1 text-lg font-semibold">
                 {r.title || r.url || `Vault Document ${i+1}`}
               </h3>
               {safeHttpUrl(r.url) && (
-                <a href={safeHttpUrl(r.url) || undefined} target="_blank" rel="noopener noreferrer" className="text-xs font-mono text-gray-400 hover:underline block mb-3">
+                <a href={safeHttpUrl(r.url) || undefined} target="_blank" rel="noopener noreferrer" className="mb-3 block font-mono text-xs opacity-60 hover:underline" style={{ color: 'var(--accent)' }}>
                   <ExternalLink size={12} className="inline" /> {safeHttpUrl(r.url)}
                 </a>
               )}
-              <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed">
+              <p className="whitespace-pre-wrap text-sm leading-relaxed opacity-90">
                 {r.content ? r.content.slice(0, 500) : 'No preview available'}
                 {r.content && r.content.length > 500 ? '...' : ''}
               </p>

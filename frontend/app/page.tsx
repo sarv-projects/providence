@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
+import { X } from 'lucide-react'
 import 'katex/dist/katex.min.css'
 import {
   Sidebar,
@@ -47,6 +48,7 @@ export default function Home() {
     findingsCount?: number
     offTopic?: boolean
     stage?: string
+    perspectives?: string[]
   }>({ learned: [], gaps: [], nextAction: '', thoughts: [] })
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const pollAbortRef = useRef<AbortController | null>(null)
@@ -113,6 +115,7 @@ export default function Home() {
           findingsCount: snap.findings_count,
           offTopic: snap.off_topic,
           stage: snap.stage,
+          perspectives: snap.perspectives || [],
         })
         if (snap.error) {
           // Job failed — capture the message and stop polling
@@ -150,7 +153,7 @@ export default function Home() {
       { role: 'assistant', content: lastReport, timestamp: new Date() },
     ])
     setProgressStatus('')
-    setThinking({ learned: [], gaps: [], nextAction: '', thoughts: [] })
+    setThinking({ learned: [], gaps: [], nextAction: '', thoughts: [], perspectives: [] })
     activeJobIdRef.current = ''
     setActiveJobId('')
   }
@@ -191,6 +194,7 @@ export default function Home() {
         gaps: [],
         nextAction: 'Gathering sources with approved plan',
         thoughts: [],
+        perspectives: [],
       })
       pollAbortRef.current = new AbortController()
       await pollResearchJob(runRes?.job_id || '', pendingPlan.query, pollAbortRef.current.signal)
@@ -364,7 +368,7 @@ export default function Home() {
         }
       } else {
         setProgressStatus('Starting research...')
-        setThinking({ learned: [], gaps: [], nextAction: 'Planning…', thoughts: [] })
+        setThinking({ learned: [], gaps: [], nextAction: 'Planning…', thoughts: [], perspectives: [] })
         setPendingPlan(null)
 
         // L2 required plan review; L1 optional via planFirst toggle
@@ -432,10 +436,10 @@ export default function Home() {
   }
 
   return (
-    <div className="flex h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100">
+    <div className="flex h-screen chat-root">
       <Sidebar mode={mode} onModeChange={setMode} />
 
-      <div className="flex-1 flex flex-col">
+      <div className="flex flex-1 flex-col">
         <ApprovalBanner approvals={approvals} onRespond={handleApprovalResponse} />
         <ProgressBanner
           status={progressStatus}
@@ -449,10 +453,11 @@ export default function Home() {
           findingsCount={thinking.findingsCount}
           offTopic={thinking.offTopic}
           stage={thinking.stage}
+          perspectives={thinking.perspectives}
         />
 
-        <div className="flex-1 overflow-y-auto p-4">
-          <div className="max-w-4xl mx-auto space-y-4">
+        <div className="chat-scroll flex-1 overflow-y-auto p-4">
+          <div className="chat-inner">
             {messages.map((message, index) => (
               <MessageBubble key={index} message={message} />
             ))}
@@ -478,8 +483,8 @@ export default function Home() {
               <div>
                 <LoadingDots label={mode === 'research' ? progressStatus || 'Executing multi-agent research graph...' : 'Streaming response...'} />
                 {mode === 'research' && activeJobId && (
-                  <button type="button" onClick={cancelActiveResearch} className="mt-2 text-xs text-red-600 hover:underline">
-                    Cancel research
+                  <button type="button" onClick={cancelActiveResearch} className="danger-button mt-2 !px-3 !py-1.5 !text-xs">
+                    <X size={12} /> Cancel research
                   </button>
                 )}
               </div>

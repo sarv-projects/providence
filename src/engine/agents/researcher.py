@@ -12,6 +12,7 @@ import re
 import time
 
 from src.llm import call_llm
+from src.jsonutil import parse_json_dict, parse_json_list
 from src.tools import execute_searches, extract_pages as tool_extract
 from src.tools.registry import get_registry
 from src.urlutil import canonical_url
@@ -582,9 +583,8 @@ Return a JSON object with:
 
     # Task-tier (Tier-2 #18): extraction is high-throughput, not deep reasoning
     result = call_llm(RESEARCHER_SYSTEM, prompt, model="task")
-    try:
-        analysis = json.loads(result.strip().removeprefix("```json").removesuffix("```").strip())
-    except json.JSONDecodeError:
+    analysis = parse_json_dict(result, default=None)
+    if not analysis:
         analysis = {"findings": [content_text[:500]], "claims": [], "gaps": [], "confidence": "low"}
 
     findings = analysis.get("findings", [])

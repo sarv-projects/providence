@@ -18,6 +18,8 @@ import hashlib
 import json
 import os
 import re
+
+from src.jsonutil import parse_json_list
 import urllib.request
 from difflib import SequenceMatcher
 from typing import Optional
@@ -237,15 +239,14 @@ def extract_factoids(source_text: str, source_url: str = "") -> list[dict]:
         for suffix in ("```",):
             if cleaned.endswith(suffix):
                 cleaned = cleaned[:-len(suffix)].strip()
-        factoids = json.loads(cleaned)
+        factoids = parse_json_list(cleaned)
         if not isinstance(factoids, list):
             factoids = []
     except json.JSONDecodeError:
         match = re.search(r"\[.*?\]", raw, re.DOTALL)
         if match:
-            try:
-                factoids = json.loads(match.group())
-            except json.JSONDecodeError:
+            factoids = parse_json_list(match.group())
+            if not isinstance(factoids, list):
                 return []
         else:
             return []

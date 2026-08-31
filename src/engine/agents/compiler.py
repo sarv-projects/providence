@@ -317,6 +317,19 @@ def _build_bedrock_section(state: ResearchState) -> dict:
                     shown.add(cu)
                     lines.append(f"   - {cu}")
             lines.append("")
+    # Perspective coverage (STORM-style) — which angles shaped retrieval and
+    # counter-evidence hunts; gives the reader the lens set behind the report.
+    perspectives = (state.get("scout") or {}).get("perspectives") or []
+    if perspectives:
+        lines.append("## Research perspectives\n")
+        lines.append("_The lens set used to widen evidence and hunt counter-evidence._\n")
+        for p in perspectives[:6]:
+            name = str(p.get("name") if isinstance(p, dict) else p or "unamed")[:80]
+            angle = str((p.get("angle") if isinstance(p, dict) else "") or "")[:180]
+            lines.append(f"- **{name}**{(': ' + angle) if angle else ''}")
+            for q in ((p.get("questions") if isinstance(p, dict) else None) or [])[:3]:
+                lines.append(f"   - {str(q)[:160]}")
+        lines.append("")
     # Top chunk quotes
     chunks = state.get("retrieved_chunks") or []
     if chunks:

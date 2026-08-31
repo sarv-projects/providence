@@ -60,6 +60,8 @@ class ResearchProgress:
             self.plan: dict = {}
             self.off_topic: bool = False
             self.pages_scanned: int = 0
+            # STORM-style perspective lens set (scout output, names only)
+            self.perspectives: list[str] = []
 
     def start(
         self,
@@ -148,6 +150,7 @@ class ResearchProgress:
         off_topic: bool | None = None,
         learned: list[str] | None = None,
         gaps: list[str] | None = None,
+        perspectives: list[str] | None = None,
     ) -> None:
         with self._lock:
             if stage:
@@ -190,6 +193,8 @@ class ResearchProgress:
                 self.learned = learned[-30:]
             if gaps is not None:
                 self.gaps = gaps[-30:]
+            if perspectives is not None:
+                self.perspectives = [str(p) for p in perspectives[:12]]
             self.elapsed_s = time.time() - self.started_at if self.started_at else 0
             # sync job
             if self.job_id:
@@ -212,6 +217,7 @@ class ResearchProgress:
                             next_action=self.next_action,
                             plan=self.plan,
                             error=self.error,
+                            perspectives=self.perspectives,
                         )
                 except Exception:
                     logging.getLogger(__name__).debug("ignored error", exc_info=True)
@@ -250,6 +256,7 @@ class ResearchProgress:
                 "thoughts": list(self.thoughts[-25:]),
                 "plan": self.plan,
                 "off_topic": self.off_topic,
+                "perspectives": list(self.perspectives[-12:]),
             }
 
 

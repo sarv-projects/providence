@@ -11,6 +11,11 @@ module.exports = {
       colors: {
         background: 'var(--background)',
         foreground: 'var(--foreground)',
+        surface: 'var(--surface)',
+        'surface-2': 'var(--surface-2)',
+        'surface-3': 'var(--surface-3)',
+        muted: 'var(--muted)',
+        accent: 'var(--accent)',
       },
     },
   },

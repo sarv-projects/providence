@@ -75,18 +75,19 @@ export default function HistoryPage() {
             <div>
               <h2 className="text-xl font-semibold mb-4">Search history</h2>
               <div className="space-y-3">
-                {filteredHistory.map((item, idx) => (
+                                {filteredHistory.map((item, idx) => (
                   <div
                     key={idx}
-                    className="bg-white dark:bg-gray-800 rounded-lg shadow p-4 border border-gray-200 dark:border-gray-700"
+                    className="card-hover rounded-xl border p-4 shadow-sm"
+                    style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
                   >
                     <h3 className="font-semibold">{item.query}</h3>
-                    <div className="flex justify-between text-xs text-gray-500 mt-2">
+                    <div className="mt-2 flex justify-between text-xs" style={{ color: 'var(--muted)' }}>
                       <span>{item.timestamp}</span>
                       <span>{item.findings_count ?? 0} findings</span>
                     </div>
                     {item.report_path && (
-                      <p className="font-mono text-xs text-gray-400 mt-1 truncate">
+                      <p className="mt-1 truncate font-mono text-xs opacity-50">
                         {item.report_path}
                       </p>
                     )}
@@ -99,14 +100,15 @@ export default function HistoryPage() {
             <div>
               <h2 className="text-xl font-semibold mb-4">Reports on disk</h2>
               <div className="space-y-2 max-h-[70vh] overflow-y-auto">
-                {filteredReports.map((r) => (
+                                {filteredReports.map((r) => (
                   <button
                     key={r.name}
                     onClick={() => openReport(r.name)}
-                    className="w-full text-left bg-white dark:bg-gray-800 rounded-lg p-3 border border-gray-200 dark:border-gray-700 hover:border-blue-500 transition text-sm"
+                    className="card-hover w-full rounded-xl border p-3 text-left text-sm shadow-sm transition"
+                    style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
                   >
-                    <div className="font-medium truncate">{r.name}</div>
-                    <div className="text-xs text-gray-500 mt-1 flex justify-between">
+                    <div className="truncate font-medium">{r.name}</div>
+                    <div className="mt-1 flex justify-between text-xs" style={{ color: 'var(--muted)' }}>
                       <span>{r.format}</span>
                       <span>{r.modified}</span>
                       <span>{Math.round(r.size_bytes / 1024)} KB</span>
@@ -120,20 +122,18 @@ export default function HistoryPage() {
         )}
 
         {preview && (
-          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-            <div className="bg-white dark:bg-gray-900 rounded-xl max-w-4xl w-full max-h-[85vh] overflow-hidden flex flex-col shadow-2xl">
-              <div className="flex justify-between items-center px-6 py-4 border-b border-gray-200 dark:border-gray-700">
-                <h3 className="font-semibold truncate pr-4">{preview.name}</h3>
-                <button
-                  onClick={() => setPreview(null)}
-                  className="px-3 py-1 bg-gray-200 dark:bg-gray-700 rounded text-sm"
-                >
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+            <div
+              className="flex max-h-[85vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border shadow-2xl"
+              style={{ borderColor: 'var(--border)', background: 'var(--surface)', color: 'var(--foreground)' }}
+            >
+              <div className="flex items-center justify-between border-b px-6 py-4" style={{ borderColor: 'var(--border)' }}>
+                <h3 className="truncate pr-4 font-semibold">{preview.name}</h3>
+                <button onClick={() => setPreview(null)} className="secondary-button !px-3 !py-1 !text-xs">
                   Close
                 </button>
               </div>
-              <pre className="p-6 overflow-y-auto text-xs whitespace-pre-wrap flex-1">
-                {preview.content}
-              </pre>
+              <pre className="flex-1 overflow-y-auto whitespace-pre-wrap p-6 text-xs">{preview.content}</pre>
             </div>
           </div>
         )}

@@ -13,6 +13,7 @@ import json
 import re
 
 from src.llm import call_llm
+from src.jsonutil import parse_json_dict
 from src.state import ResearchState
 from src.urlutil import canonical_url
 from src.evidence import verify_claims
@@ -257,8 +258,21 @@ def devil_advocate_gather(state: ResearchState) -> ResearchState:
         ct = (c.get("text") or "")[:100]
         if ct:
             counter_queries.append(f"{ct[:80]} criticism OR limitation")
+    # STORM-style perspective coverage: use scout's per-perspective angles to
+    # widen negative/limiting evidence beyond generic "limitations" searches.
+    perspectives = (state.get("scout") or {}).get("perspectives") or []
+    for p in perspectives[:5]:
+        name = str((p.get("name") if isinstance(p, dict) else "") or "").strip()[:70]
+        if name:
+            q = f"{core} {name}: failures limitations opposing evidence".strip()[:200]
+            if q and q not in counter_queries:
+                counter_queries.append(q)
+        for ep in ((p.get("counter_entry_points") if isinstance(p, dict) else None) or [])[:2]:
+            txt = str(ep).strip()[:200]
+            if txt and txt not in counter_queries:
+                counter_queries.append(txt)
 
-    counter_queries = counter_queries[:5]
+    counter_queries = counter_queries[:8]
     budget_line = budget_status_line(state)
     state["status"] = "Devil's advocate: searching counter-evidence..."
     _progress("adversary", state["status"])
@@ -428,9 +442,7 @@ def claim_adjudicator(state: ResearchState) -> ResearchState:
                     max_tokens=600,
                 )
                 cleaned = raw.strip().removeprefix("```json").removesuffix("```").strip()
-                if "{" in cleaned:
-                    cleaned = cleaned[cleaned.find("{") : cleaned.rfind("}") + 1]
-                data = json.loads(cleaned)
+                data = parse_json_dict(cleaned)
                 if isinstance(data.get("research_debt"), list) and data["research_debt"]:
                     state["research_debt"] = [str(x)[:240] for x in data["research_debt"][:8]]
                 if data.get("confidence_note"):

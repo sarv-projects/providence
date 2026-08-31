@@ -21,6 +21,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from src.llm import call_llm as _call_llm
+from src.jsonutil import parse_json_dict, parse_json_list
 from src.state import ResearchState
 from .registry import register
 
@@ -64,35 +65,21 @@ def _invoke_thinker(context_pack: str, purpose: str) -> dict:
 
 Return a JSON object with your analysis."""
     result = _call_llm(THINKER_SYSTEM, prompt, model="thinker")
-    try:
-        cleaned = result.strip()
-        for pfx in ("```json", "```"):
-            if cleaned.startswith(pfx):
-                cleaned = cleaned[len(pfx):].strip()
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:-3].strip()
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        return {"error": "Failed to parse Thinker output", "raw": result[:500]}
+    data = parse_json_dict(
+        result,
+        default={"error": "Failed to parse Thinker output", "raw": result[:500]},
+    )
+    if "error" not in data and not data:
+        # Empty dict the model produced — treat as parse weakness
+        return {"error": "Empty Thinker output", "raw": result[:500]}
+    return data
 
 
 def _parse_json_loose(raw: str) -> dict:
-    try:
-        cleaned = (raw or "").strip()
-        for pfx in ("```json", "```"):
-            if cleaned.startswith(pfx):
-                cleaned = cleaned[len(pfx):].strip()
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:-3].strip()
-        # Strip leading CoT before first {
-        if "{" in cleaned and not cleaned.startswith("{"):
-            cleaned = cleaned[cleaned.find("{"):]
-        if "}" in cleaned:
-            cleaned = cleaned[: cleaned.rfind("}") + 1]
-        data = json.loads(cleaned)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {"error": "parse_failed", "raw": (raw or "")[:400]}
+    data = parse_json_dict(raw)
+    if data:
+        return data
+    return {"error": "parse_failed", "raw": (raw or "")[:400]}
 
 
 def _gemini_direct(system: str, user: str, max_tokens: int = 1200) -> str:
@@ -163,20 +150,132 @@ def _web_scout_snippets(query: str, k: int = 5) -> list[dict]:
     return hits
 
 
+_PERSPECTIVE_FALLBACK = [
+    {
+        "name": "Practitioner / industry engineer",
+        "angle": "real-world deployment, integration, and operational concerns",
+        "questions": [],
+        "counter_entry_points": [],
+    },
+    {
+        "name": "Academic researcher",
+        "angle": "theory, methods, reproducibility, and evidence strength",
+        "questions": [],
+        "counter_entry_points": [],
+    },
+    {
+        "name": "Adversarial critic",
+        "angle": "failures, limitations, biases, and opposing evidence",
+        "questions": [],
+        "counter_entry_points": [],
+    },
+    {
+        "name": "End user / specialist",
+        "angle": "usability, edge cases, and niche real-life outcomes",
+        "questions": [],
+        "counter_entry_points": [],
+    },
+]
+
+
+def _normalize_perspectives(data) -> list[dict]:
+    """Coerce the LLM's perspectives payload into a clean list of dicts."""
+    raw = data.get("perspectives") if isinstance(data, dict) else data
+    if not isinstance(raw, list):
+        raw = []
+    out: list[dict] = []
+    for p in raw:
+        if isinstance(p, dict) and (p.get("name") or p.get("role")):
+            out.append(
+                {
+                    "name": str(p.get("name") or p.get("role") or "perspective")[:80],
+                    "angle": str(p.get("angle") or p.get("description") or "")[:240],
+                    "questions": [
+                        str(q)[:200]
+                        for q in (p.get("questions") or [])
+                        if str(q).strip()
+                    ][:6],
+                    "counter_entry_points": [
+                        str(q)[:200]
+                        for q in (p.get("counter_entry_points") or [])
+                        if str(q).strip()
+                    ][:4],
+                }
+            )
+        elif isinstance(p, str) and p.strip():
+            out.append(
+                {
+                    "name": str(p)[:80],
+                    "angle": "",
+                    "questions": [],
+                    "counter_entry_points": [],
+                }
+            )
+    return out
+
+
+def _build_perspectives(query: str, base_ctx: str, preliminary: list[dict]) -> list[dict]:
+    """STORM-style perspective diversity (deep-dive pass).
+
+    One extra Gemini/thinker call expands every generated perspective into
+    probing questions and counter-evidence entry points, so the planner AND
+    the devil's-advocate stage can both use them to widen coverage.
+    """
+    perspectives = preliminary[:5]
+    if len(perspectives) < 3:
+        known = {p.get("name") for p in perspectives}
+        for fp in _PERSPECTIVE_FALLBACK:
+            if len(perspectives) >= 5:
+                break
+            if fp["name"] not in known:
+                perspectives.append(dict(fp))
+                known.add(fp["name"])
+    if not perspectives:
+        perspectives = [dict(p) for p in _PERSPECTIVE_FALLBACK[:4]]
+
+    names = [p["name"] for p in perspectives if p.get("name")]
+    if not names:
+        return perspectives
+    try:
+        dive_prompt = (
+            "Perspective deep-dive planner. Return JSON only.\n"
+            + base_ctx
+            + "\nGiven these perspectives (keep all):\n"
+            + "\n".join(f"- {n}" for n in names)
+            + "\nReturn JSON: {\"perspectives\": ["
+            + '{"name": "...", "angle": "...", "questions": ["3-4 probing research questions"], '
+            + '"counter_entry_points": ["2-3 concrete search angles to find failures, limitations, '
+            + 'or opposing evidence"]}]}'
+        )
+        raw = _gemini_direct(
+            "You are a research methodologies planner. Return JSON only.",
+            dive_prompt,
+            max_tokens=1600,
+        )
+        enriched = _normalize_perspectives(parse_json_dict(raw))
+        if len(enriched) >= 2:
+            return enriched[:5]
+    except Exception as e:
+        print(f"  Scout/perspective dive failed: {e}")
+    return perspectives
+
+
 @register("thinker_query_scout")
 def thinker_query_scout(state: ResearchState) -> ResearchState:
-    """Start-of-run thinker: web scout + 2–3 parallel Gemini analyses.
+    """Start-of-run thinker: web scout + 4 parallel Gemini analyses + a
+    perspective deep-dive pass.
 
     Improves plan quality by seeding:
       - refined_query / sub_questions
       - must_cover systems/papers
       - search_queries
       - eval_axes / failure_modes
-    Within Gemini free RPM (~15 for Flash-Lite): 3 parallel requests OK.
+      - perspectives (STORM-style lens set, with questions + counter angles)
+    Within Gemini free RPM (~15 for Flash-Lite): 4 parallel requests + 1 dive OK.
     """
     query = state.get("query") or ""
     state["status"] = "Scout: web + parallel thinker..."
-    print(f"\n💭 [Thinker] Query scout (web + 3× parallel Gemini/thinker)")
+    print(f"\n💭 [Thinker] Query scout (web + 4× parallel Gemini/thinker + perspective dive)")
     try:
         from src.engine.progress import get_progress
         get_progress().update(stage="scouting", status=state["status"])
@@ -223,6 +322,19 @@ def thinker_query_scout(state: ResearchState) -> ResearchState:
             '  "outline_hints": ["section titles for deep report"]\n'
             "}",
         ),
+        "perspectives": (
+            "Perspective diversity planner. Return JSON only.",
+            base_ctx
+            + "Return JSON: {\n"
+            '  "perspectives": [{"name": "short role/name", "role": "short role/name", '
+            '"angle": "what this perspective cares about", '
+            '"questions": ["one probing research question"], '
+            '"counter_entry_points": ["one search angle to find failures/limitations/opposing views"]}, ... 3-5 items]\n'
+            "Include at least one adversarial/critic perspective (failures, limitations, "
+            "opposing evidence) and one practitioner/industry perspective. "
+            "Each perspective must be procedurally distinct.\n"
+            "}",
+        ),
     }
 
     results: dict[str, dict] = {}
@@ -249,6 +361,13 @@ def thinker_query_scout(state: ResearchState) -> ResearchState:
     intent = results.get("intent") or {}
     systems = results.get("systems") or {}
     evalp = results.get("eval") or {}
+    # STORM-style perspective diversity (one extra deep-dive Gemini/thinker call)
+    preliminary = _normalize_perspectives(results.get("perspectives"))
+    perspectives = _build_perspectives(query, base_ctx, preliminary)
+    print(
+        f"  Scout perspectives ({len(perspectives)}): "
+        + ", ".join(p.get("name", "?") for p in perspectives)
+    )
 
     # Merge into state for planner / researcher
     scout = {
@@ -263,6 +382,16 @@ def thinker_query_scout(state: ResearchState) -> ResearchState:
         "failure_modes": evalp.get("failure_modes") or [],
         "production_topics": evalp.get("production_topics") or [],
         "outline_hints": evalp.get("outline_hints") or [],
+        "perspectives": [
+            {
+                "name": p.get("name", ""),
+                "angle": p.get("angle", ""),
+                "questions": p.get("questions", []),
+                "counter_entry_points": p.get("counter_entry_points", []),
+            }
+            for p in perspectives
+        ],
+        "perspective_names": [p.get("name", "") for p in perspectives],
     }
     state["scout"] = scout
     state.setdefault("plan", {})
@@ -271,6 +400,7 @@ def thinker_query_scout(state: ResearchState) -> ResearchState:
         for k in (
             "refined_query", "sub_questions", "must_cover_systems",
             "must_cover_papers", "eval_axes", "failure_modes", "outline_hints",
+            "perspectives",
         )
     }
 
@@ -304,14 +434,23 @@ def thinker_query_scout(state: ResearchState) -> ResearchState:
             "learned",
             f"Scout systems: {', '.join(str(s) for s in (scout['must_cover_systems'] or [])[:6])}",
         )
+        if scout.get("perspective_names"):
+            get_progress().think(
+                "learned",
+                "Perspectives: " + ", ".join(scout["perspective_names"][:5]),
+            )
         get_progress().think("next", f"Plan with {len(state['search_queries'])} seeded queries")
-        get_progress().update(plan=state.get("plan") or {})
+        get_progress().update(
+            plan=state.get("plan") or {},
+            perspectives=scout.get("perspective_names") or [],
+        )
     except Exception:
         logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
     state["status"] = (
         f"Scout done: {len(hits)} web hits, "
         f"{len(scout['must_cover_systems'])} systems, "
+        f"{len(perspectives)} perspectives, "
         f"{len(state['search_queries'])} queries"
     )
     print(f"  {state['status']}")
@@ -328,6 +467,7 @@ def _build_plan_pack(state: ResearchState) -> str:
         f"MUST_COVER_PAPERS: {json.dumps(scout.get('must_cover_papers', [])[:10])}",
         f"EVAL_AXES: {json.dumps(scout.get('eval_axes', [])[:10])}",
         f"FAILURE_MODES: {json.dumps(scout.get('failure_modes', [])[:10])}",
+        f"PERSPECTIVES: {json.dumps([p.get('name') if isinstance(p, dict) else p for p in (scout.get('perspectives') or [])[:8]])}",
         f"OUTLINE_HINTS: {json.dumps(scout.get('outline_hints', [])[:12])}",
         f"TOPIC: {plan.get('topic', '')}",
         f"SUBTOPICS: {json.dumps(plan.get('subtopics', []))}",
@@ -489,11 +629,7 @@ def thinker_search_strategy(state: ResearchState) -> ResearchState:
         analysis = _invoke_thinker(pack, purpose)
     else:
         raw = _call_llm(THINKER_SYSTEM, f"{purpose}\n\n{pack}", model="fast")
-        try:
-            cleaned = raw.strip().removeprefix("```json").removesuffix("```").strip()
-            analysis = json.loads(cleaned)
-        except Exception:
-            analysis = {}
+        analysis = parse_json_dict(raw)
 
     queries = analysis.get("search_queries") if isinstance(analysis, dict) else None
     arxiv_q = analysis.get("arxiv_queries") if isinstance(analysis, dict) else None

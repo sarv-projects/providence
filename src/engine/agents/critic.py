@@ -13,6 +13,7 @@ import json
 import re
 
 from src.llm import call_llm
+from src.jsonutil import parse_json_dict
 from src.state import ResearchState
 from .registry import register
 
@@ -271,15 +272,8 @@ Return JSON:
         return state
 
     result = call_llm(CRITIC_SYSTEM, prompt, model="fast")
-    try:
-        cleaned = result.strip()
-        for pfx in ("```json", "```"):
-            if cleaned.startswith(pfx):
-                cleaned = cleaned[len(pfx):].strip()
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:-3].strip()
-        evaluation = json.loads(cleaned)
-    except json.JSONDecodeError:
+    evaluation = parse_json_dict(result)
+    if not evaluation:
         evaluation = {
             "complete": len(findings) >= 5 and len(urls) >= 3,
             "reason": "JSON parse failed — heuristic complete",

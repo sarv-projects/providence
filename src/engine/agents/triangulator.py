@@ -18,6 +18,8 @@ import json
 import re
 import threading
 import time
+
+from src.jsonutil import parse_json_dict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from src.llm import call_llm as _call_llm
@@ -168,23 +170,10 @@ def triangulator(state: ResearchState) -> ResearchState:
     try:
         arbiter_raw = _call_llm(ARBITER_PROMPT, arbiter_input, model="strong")
         # Robust JSON extraction: strip code fences, try raw, fallback to regex
-        cleaned = arbiter_raw.strip()
-        for prefix in ("```json", "```"):
-            if cleaned.startswith(prefix):
-                cleaned = cleaned[len(prefix):].strip()
-        for suffix in ("```",):
-            if cleaned.endswith(suffix):
-                cleaned = cleaned[:-len(suffix)].strip()
-        try:
-            arbiter = json.loads(cleaned)
-        except json.JSONDecodeError:
-            # Fallback: find the first JSON object with regex
-            match = re.search(r'\{.*\}', arbiter_raw, re.DOTALL)
-            if match:
-                arbiter = json.loads(match.group())
-            else:
-                raise
-    except (json.JSONDecodeError, Exception) as e:
+        arbiter = parse_json_dict(arbiter_raw, default={})
+        if not arbiter:
+            arbiter = {"bias_score": 5, "synthesis": "Arbiter unavailable", "error": "parse_failed"}
+    except Exception as e:
         arbiter = {"bias_score": 5, "synthesis": "Arbiter unavailable", "error": str(e)}
 
     # Enrich state with triangulation results

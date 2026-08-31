@@ -6,6 +6,8 @@ import json
 import re
 from typing import Any
 
+from src.jsonutil import parse_json_dict
+
 
 AMBIGUITY_HINTS = (
     "best", "better", "should i", "which", "recommend", "vs", "versus",
@@ -77,7 +79,7 @@ Return JSON only:
             model="fast",
         )
         cleaned = raw.strip().removeprefix("```json").removesuffix("```").strip()
-        data = json.loads(cleaned)
+        data = parse_json_dict(cleaned)
         if not isinstance(data, dict):
             return fallback
         qs = data.get("questions") or []

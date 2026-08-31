@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "groq>=1.5.0",
+    "json-repair>=0.25.0",
     "lancedb>=0.17",
     "langgraph>=1.2.7",
     "numpy>=1.24",
