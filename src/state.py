@@ -37,7 +37,7 @@ class ResearchState(TypedDict):
     search_results: list[SearchResult]
     extracted_pages: list[ExtractedPage]
     clean_content: list[str]
-    claims: list[dict]    # [{text, evidence_ids: [url, ...], confidence}]
+    claims: list[dict]    # [{text, atoms, evidence: [{url, quote}], confidence}]
 
     # --- RAG ---
     run_id: str
@@ -75,6 +75,10 @@ class ResearchState(TypedDict):
 
     # --- Structured missing-facts (r1-reasoning-rag) ---
     missing_facts: list[dict]  # [{fact, sub_topic, suggested_queries: [...]}]
+
+    # --- Evidence ledger (fetched-source ledger for the compiler ship-gate) ---
+    fetched_sources: dict  # {canonical_url: {url,title,status,content_hash,chars,fetched_at}}
+    verified_spans: list  # [{claim, atom, quote, url, start, end}]
 
     # --- Evidence graph (Argus) ---
     evidence_graph: list[dict]  # [{claim_id, claim, evidence_url, relation: support|contradiction|unsupported, score}]
@@ -167,6 +171,8 @@ def initial_state(query: str, max_iterations: int = 6) -> ResearchState:
             "open_hypotheses": [],
         },
         "missing_facts": [],
+        "fetched_sources": {},
+        "verified_spans": [],
         "evidence_graph": [],
         "atomic_verified": [],
         "task_ledger": [],

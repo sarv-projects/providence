@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from .circuit import CircuitRegistry
-from .keys import KeyManager, Tenant
+from .keys import KeyManager, Reservation, Tenant
 from .metrics import DEFAULT_METRICS, MetricsRegistry
 from .providers import (
     ProviderConnectionError,
@@ -88,7 +88,19 @@ class Gateway:
 
     def get_routes(self, tier: str) -> List[Route]:
         with self._lock:
-            return list(self._routes.get(tier, []))
+            routes = self._routes.get(tier)
+            if routes is not None:
+                return list(routes)
+            # The settings UI stores provider/model route IDs (for example
+            # ``opencode_free/nemotron-...``), while the graph usually asks
+            # for a tier.  Resolve an exact route ID to a single route so a
+            # selected model is an actual request constraint, not decoration.
+            return [
+                route
+                for tier_routes in self._routes.values()
+                for route in tier_routes
+                if route.name == tier
+            ]
 
     def complete_stream(
         self,
@@ -111,50 +123,106 @@ class Gateway:
         tenant_obj = self._resolve_tenant(virtual_key, tenant)
         last_error: Optional[Exception] = None
 
-        for route in routes:
-            if not self.circuits.get(route.name).allow_request():
-                last_error = ProviderConnectionError(f"circuit open for {route.name}")
-                continue
+        # Atomic quota reservation (same as complete())
+        prompt_est = sum(len(m.get("content") or "") for m in messages) // 4
+        est_tokens = prompt_est + (max_tokens or 1024)
+        est_cost, _ = self._estimate_request(est_tokens)
+        reservation = self.km.reserve_for(tenant_obj, estimated_cost_usd=est_cost, estimated_tokens=est_tokens)
+        if reservation is None:
+            raise QuotaExceeded("Budget / daily token quota exhausted")
 
-            try:
+        try:
+            for route in routes:
+                if not self.circuits.get(route.name).allow_request():
+                    last_error = ProviderConnectionError(f"circuit open for {route.name}")
+                    continue
+
                 keys = []
                 if hasattr(route.provider, "api_keys") and route.provider.api_keys:
                     keys = route.provider.api_keys
                 api_key = self._pick_key(route.provider, keys)
 
-                if not self.rl.enter_parallel():
-                    raise QuotaExceeded("No concurrency slot")
-                try:
-                    if not self.rl.acquire(tenant_obj.tenant_id, route.model):
-                        raise QuotaExceeded(f"Rate limit: {route.model}")
+                # Retry with backoff on retriable errors — but ONLY while
+                # nothing has been yielded yet (retrying mid-stream would
+                # duplicate output to the caller).
+                for attempt in range(1, self.max_attempts + 1):
+                    yielded_any = False
+                    try:
+                        if not self.rl.enter_parallel():
+                            raise QuotaExceeded("No concurrency slot")
+                        started = time.time()
+                        try:
+                            if not self.rl.acquire(tenant_obj.tenant_id, route.model):
+                                raise QuotaExceeded(f"Rate limit: {route.model}")
 
-                    # Yield chunks from streaming provider
-                    full_text = ""
-                    for chunk in route.provider.complete_stream(
-                        messages, model=route.model,
-                        temperature=temperature, max_tokens=max_tokens, api_key=api_key,
-                    ):
-                        full_text += chunk
-                        yield chunk
+                            # Yield chunks from streaming provider
+                            full_text = ""
+                            for chunk in route.provider.complete_stream(
+                                messages, model=route.model,
+                                temperature=temperature, max_tokens=max_tokens, api_key=api_key,
+                            ):
+                                yielded_any = True
+                                full_text += chunk
+                                yield chunk
 
-                    # Record success after full stream
-                    self.circuits.get(route.name).on_success()
-                    self.metrics.log_event(
-                        "success", route=route.name, streamed=True,
-                        chars=len(full_text),
-                    )
-                    return
-                finally:
-                    self.rl.exit_parallel()
+                            # Record success after full stream — same accounting
+                            # path as complete(): circuit, cost/token charge,
+                            # metrics, reservation commit.
+                            self.circuits.get(route.name).on_success()
+                            latency_s = time.time() - started
+                            # Tokens are unknown until the provider reports
+                            # usage; estimate ~4 chars per token.
+                            prompt_tokens = prompt_est
+                            completion_tokens = max(1, len(full_text) // 4)
+                            cost = self._estimate_cost(
+                                route.provider.name, route.model,
+                                ProviderResult(
+                                    text=full_text,
+                                    prompt_tokens=prompt_tokens,
+                                    completion_tokens=completion_tokens,
+                                    latency_s=latency_s,
+                                ),
+                            )
+                            self.km.charge(
+                                tenant_obj, cost, prompt_tokens + completion_tokens,
+                                reservation=reservation,
+                            )
+                            self.metrics.record_success(
+                                route.provider.name, route.model, latency_s,
+                                prompt_tokens, completion_tokens, cost, tenant_obj.tenant_id,
+                            )
+                            self.metrics.log_event(
+                                "success", route=route.name, streamed=True,
+                                chars=len(full_text), estimated_tokens=completion_tokens,
+                            )
+                            return
+                        finally:
+                            self.rl.exit_parallel()
 
-            except (ProviderHTTPError, ProviderTimeoutError, ProviderConnectionError) as e:
-                last_error = e
-                if isinstance(e, ProviderHTTPError) and not e.retriable:
-                    continue
+                    except (ProviderHTTPError, ProviderTimeoutError, ProviderConnectionError) as e:
+                        last_error = e
+                        # Streaming previously bypassed circuit/metrics —
+                        # record failures so breakers trip and dashboards
+                        # stay accurate.
+                        self.metrics.record_error(
+                            route.provider.name, route.model, type(e).__name__,
+                            str(e)[:120], tenant_obj.tenant_id,
+                        )
+                        retriable = not (isinstance(e, ProviderHTTPError) and not e.retriable)
+                        self.circuits.get(route.name).on_failure(retriable)
+                        if not retriable or yielded_any or attempt >= self.max_attempts:
+                            break  # next route (or final failure)
+                        self._backoff(attempt)
+                    except QuotaExceeded:
+                        raise  # concurrency/rate-limit denials are not retryable here
 
-        raise AllRoutesFailed(
-            f"All {len(routes)} route(s) failed; last error: {last_error}"
-        ) from last_error
+            raise AllRoutesFailed(
+                f"All {len(routes)} route(s) failed; last error: {last_error}"
+            ) from last_error
+        except Exception:
+            # Failure path: no charge happened — return the quota hold.
+            self.km.release_reservation(reservation)
+            raise
 
     # ---- public entry point ---------------------------------------------
     def complete(
@@ -181,27 +249,42 @@ class Gateway:
         stats = GatewayStats()
         last_error: Optional[Exception] = None
 
-        for route in routes:
-            if not self.circuits.get(route.name).allow_request():
-                self.metrics.log_event("skip", reason="circuit_open", route=route.name)
-                last_error = ProviderConnectionError(f"circuit open for {route.name}")
-                continue
+        # Atomic quota reservation: check + hold in ONE lock so N concurrent
+        # requests cannot each pass the check before any of them charges.
+        prompt_est = sum(len(m.get("content") or "") for m in messages) // 4
+        est_tokens = prompt_est + (max_tokens or 1024)
+        est_cost, _ = self._estimate_request(est_tokens)
+        reservation = self.km.reserve_for(tenant, estimated_cost_usd=est_cost, estimated_tokens=est_tokens)
+        if reservation is None:
+            raise QuotaExceeded("Budget / daily token quota exhausted")
 
-            try:
-                return self._call_route(
-                    route, messages, tenant, max_tokens, temperature, stats
-                )
-            except (ProviderHTTPError, ProviderTimeoutError, ProviderConnectionError) as e:
-                last_error = e
-                # A non-retriable 4xx means this route (or its key/model) is
-                # unusable for this request — try the next route once.
-                if isinstance(e, ProviderHTTPError) and not e.retriable:
+        try:
+            for route in routes:
+                if not self.circuits.get(route.name).allow_request():
+                    self.metrics.log_event("skip", reason="circuit_open", route=route.name)
+                    last_error = ProviderConnectionError(f"circuit open for {route.name}")
                     continue
 
-        self.metrics.log_event("all_failed", routes=[r.name for r in routes])
-        raise AllRoutesFailed(
-            f"All {len(routes)} route(s) failed; last error: {last_error}"
-        ) from last_error
+                try:
+                    return self._call_route(
+                        route, messages, tenant, max_tokens, temperature, stats,
+                        reservation=reservation,
+                    )
+                except (ProviderHTTPError, ProviderTimeoutError, ProviderConnectionError) as e:
+                    last_error = e
+                    # A non-retriable 4xx means this route (or its key/model) is
+                    # unusable for this request — try the next route once.
+                    if isinstance(e, ProviderHTTPError) and not e.retriable:
+                        continue
+
+            self.metrics.log_event("all_failed", routes=[r.name for r in routes])
+            raise AllRoutesFailed(
+                f"All {len(routes)} route(s) failed; last error: {last_error}"
+            ) from last_error
+        except Exception:
+            # Failure path: no charge happened — return the quota hold.
+            self.km.release_reservation(reservation)
+            raise
 
     def _resolve_tenant(self, virtual_key: Optional[str], tenant: Optional[str]) -> Tenant:
         if virtual_key:
@@ -214,6 +297,13 @@ class Gateway:
         )
         return t
 
+    @staticmethod
+    def _estimate_request(tokens_est: int) -> tuple[float, int]:
+        """Conservative (cost_usd, tokens) estimate used to reserve quota."""
+        from .providers import PRICING
+        price = PRICING.get("*default")
+        return (tokens_est / 1_000_000) * price[1], tokens_est
+
     def _call_route(
         self,
         route: Route,
@@ -222,6 +312,7 @@ class Gateway:
         max_tokens: Optional[int],
         temperature: float,
         stats: GatewayStats,
+        reservation: Optional["Reservation"] = None,
     ) -> ProviderResult:
         model = route.model
         # concurrency + rate limit
@@ -235,7 +326,8 @@ class Gateway:
             raise QuotaExceeded(f"Rate limit reached for {model}")
         self.metrics.record_ratelimit(True, tenant.tenant_id, model)
         try:
-            return self._do_retry(route, messages, tenant, max_tokens, temperature, stats)
+            return self._do_retry(route, messages, tenant, max_tokens, temperature, stats,
+                                  reservation=reservation)
         finally:
             self.rl.exit_parallel()
 
@@ -247,6 +339,7 @@ class Gateway:
         max_tokens: Optional[int],
         temperature: float,
         stats: GatewayStats,
+        reservation: Optional["Reservation"] = None,
     ) -> ProviderResult:
         attempt = 0
         while attempt < self.max_attempts:
@@ -266,7 +359,7 @@ class Gateway:
                 )
                 self.circuits.get(route.name).on_success()
                 cost = self._estimate_cost(route.provider.name, route.model, res)
-                self.km.charge(tenant, cost, res.prompt_tokens + res.completion_tokens)
+                self.km.charge(tenant, cost, res.prompt_tokens + res.completion_tokens, reservation=reservation)
                 self.metrics.record_success(
                     route.provider.name, route.model, res.latency_s,
                     res.prompt_tokens, res.completion_tokens, cost, tenant.tenant_id,

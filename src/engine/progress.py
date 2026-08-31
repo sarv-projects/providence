@@ -11,9 +11,11 @@ Deep-research style thinking panel:
 
 from __future__ import annotations
 
+import logging
+
 import threading
 import time
-from typing import Any
+from typing import Any, Optional
 
 
 class ResearchProgress:
@@ -21,6 +23,10 @@ class ResearchProgress:
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
+        # Archived snapshots of previous runs, keyed by job_id. Concurrent /
+        # overlapping runs previously clobbered each other's entire progress
+        # state because start() reset the single global object.
+        self._by_job: dict[str, dict] = {}
         self._reset()
 
     def _reset(self) -> None:
@@ -64,6 +70,13 @@ class ResearchProgress:
         mode: str = "",
     ) -> None:
         with self._lock:
+            # Archive the previous run before resetting so its snapshot stays
+            # queryable by job_id (polling clients of run A no longer see run
+            # B wipe A's progress mid-flight).
+            if self.job_id and self.started_at:
+                self._by_job[self.job_id] = self.snapshot()
+                if len(self._by_job) > 50:  # bound the archive
+                    self._by_job.pop(next(iter(self._by_job)), None)
             self._reset()
             self.run_id = run_id
             self.job_id = job_id
@@ -73,6 +86,22 @@ class ResearchProgress:
             self.stage = "starting"
             self.status = "Starting research..."
             self.started_at = time.time()
+
+    def snapshot_for(self, job_id: str) -> dict:
+        """Snapshot for a specific job without falling back to another run."""
+        with self._lock:
+            if not job_id or job_id == self.job_id:
+                return self.snapshot()
+            archived = self._by_job.get(job_id)
+            if archived is not None:
+                return dict(archived)
+            return {
+                "job_id": job_id,
+                "status": "unknown",
+                "stage": "unknown",
+                "finished": True,
+                "error": "Progress job not found",
+            }
 
     def think(self, kind: str, text: str) -> None:
         """Append a thinking-panel event."""
@@ -95,7 +124,7 @@ class ResearchProgress:
                     from src.engine.jobs import get_jobs
                     get_jobs().add_thought(self.job_id, kind, text)
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
     def update(
         self,
@@ -166,24 +195,26 @@ class ResearchProgress:
             if self.job_id:
                 try:
                     from src.engine.jobs import get_jobs
-                    get_jobs().update(
-                        self.job_id,
-                        stage=self.stage,
-                        status="complete" if self.finished and not self.error else (
-                            "error" if self.error and self.finished else "running"
-                        ),
-                        findings_count=self.findings_count,
-                        sources_count=self.sources_count,
-                        pages_scanned=self.pages_scanned,
-                        iterations=self.iteration,
-                        report=self.report,
-                        markdown_path=self.markdown_path,
-                        next_action=self.next_action,
-                        plan=self.plan,
-                        error=self.error,
-                    )
+                    jobs = get_jobs()
+                    if not jobs.is_cancelled(self.job_id):
+                        jobs.update(
+                            self.job_id,
+                            stage=self.stage,
+                            status="complete" if self.finished and not self.error else (
+                                "error" if self.error and self.finished else "running"
+                            ),
+                            findings_count=self.findings_count,
+                            sources_count=self.sources_count,
+                            pages_scanned=self.pages_scanned,
+                            iterations=self.iteration,
+                            report=self.report,
+                            markdown_path=self.markdown_path,
+                            next_action=self.next_action,
+                            plan=self.plan,
+                            error=self.error,
+                        )
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -226,4 +257,47 @@ CURRENT_PROGRESS = ResearchProgress()
 
 
 def get_progress() -> ResearchProgress:
-    return CURRENT_PROGRESS
+    """Progress for the current context.
+
+    Returns the thread's run-scoped instance when the thread is executing a
+    research run (see ``start_run_progress``), so concurrent runs each mutate
+    their own object; falls back to the shared default for CLI/tests/web
+    threads that don't belong to a run.
+    """
+    p = getattr(_tls, "progress", None)
+    return p if p is not None else CURRENT_PROGRESS
+
+
+# ── Per-run isolation (registry) ─────────────────────────────────────────
+_tls = threading.local()
+_REGISTRY: Dict[str, ResearchProgress] = {}
+_registry_lock = threading.RLock()
+_REGISTRY_MAX = 50
+
+
+def start_run_progress(job_id: str = "") -> ResearchProgress:
+    """Bind a fresh ResearchProgress to the calling thread and register it.
+
+    Agent nodes call ``get_progress()`` on the run's thread and get THIS
+    instance — concurrent runs no longer share (and clobber) one live object.
+    Polling endpoints fetch it by job_id via ``get_progress_by_job``.
+    """
+    p = ResearchProgress()
+    _tls.progress = p
+    if job_id:
+        with _registry_lock:
+            if len(_REGISTRY) >= _REGISTRY_MAX:
+                _REGISTRY.pop(next(iter(_REGISTRY)), None)
+            _REGISTRY[job_id] = p
+    return p
+
+
+def end_run_progress() -> None:
+    """Unbind the thread's run-scoped progress (call in a finally block)."""
+    _tls.progress = None
+
+
+def get_progress_by_job(job_id: str) -> Optional[ResearchProgress]:
+    """Look up a run's isolated progress object by job_id."""
+    with _registry_lock:
+        return _REGISTRY.get(job_id)

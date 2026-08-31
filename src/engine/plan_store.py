@@ -57,14 +57,39 @@ class ResearchPlan:
 
 
 class PlanStore:
+    # Bounded store: plans accumulate forever otherwise (L1 runs create one
+    # plan per research call).
+    MAX_PLANS = 500
+    MAX_AGE_S = 7 * 24 * 3600  # drop terminal plans older than 7 days
+
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._plans: dict[str, ResearchPlan] = {}
+
+    def _evict_locked(self) -> None:
+        now = time.time()
+        terminal = ("complete", "rejected", "error")
+        expired = [
+            pid for pid, p in self._plans.items()
+            if p.status in terminal and (now - p.updated_at) > self.MAX_AGE_S
+        ]
+        for pid in expired:
+            del self._plans[pid]
+        if len(self._plans) > self.MAX_PLANS:
+            # Evict oldest terminal plans first, then oldest overall
+            def _sort_key(pair):
+                p = pair[1]
+                terminal_rank = 0 if p.status in terminal else 1
+                return (terminal_rank, p.updated_at)
+            ordered = sorted(self._plans.items(), key=_sort_key)
+            for pid, _ in ordered[: len(self._plans) - self.MAX_PLANS]:
+                del self._plans[pid]
 
     def create(self, query: str, mode: str = "standard", autonomy: str = "L1") -> ResearchPlan:
         p = ResearchPlan(query, mode=mode, autonomy=autonomy)
         with self._lock:
             self._plans[p.plan_id] = p
+            self._evict_locked()
         return p
 
     def get(self, plan_id: str) -> Optional[ResearchPlan]:

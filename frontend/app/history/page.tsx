@@ -1,7 +1,9 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { Search, X, History as HistoryIcon, FileText as FileIcon } from 'lucide-react'
 import { apiGet } from '@/lib/api'
+import { AppShell } from '@/components'
 
 interface HistoryItem {
   query: string
@@ -25,13 +27,14 @@ export default function HistoryPage() {
   const [preview, setPreview] = useState<{ name: string; content: string } | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [filter, setFilter] = useState('')
 
   useEffect(() => {
     async function load() {
       try {
         const [h, r] = await Promise.all([
-          apiGet<HistoryItem[]>('/api/history?limit=30').catch(() => []),
-          apiGet<{ reports: ReportItem[] }>('/api/reports?limit=40').catch(() => ({ reports: [] })),
+          apiGet<HistoryItem[]>('/api/history?limit=30'),
+          apiGet<{ reports: ReportItem[] }>('/api/reports?limit=40'),
         ])
         setHistory(Array.isArray(h) ? h : [])
         setReports(r.reports || [])
@@ -55,29 +58,15 @@ export default function HistoryPage() {
     }
   }
 
-  return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 p-8 text-gray-900 dark:text-gray-100">
-      <div className="max-w-6xl mx-auto">
-        <div className="flex justify-between items-center mb-8">
-          <div>
-            <h1 className="text-3xl font-bold">Research History & Reports</h1>
-            <p className="text-sm text-gray-500 mt-1">
-              Past queries and generated reports on disk
-            </p>
-          </div>
-          <a
-            href="/"
-            className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition"
-          >
-            + New Research
-          </a>
-        </div>
+  const filteredHistory = history.filter((item) => item.query.toLowerCase().includes(filter.toLowerCase()))
+  const filteredReports = reports.filter((item) => item.name.toLowerCase().includes(filter.toLowerCase()))
 
-        {error && (
-          <div className="mb-6 p-4 bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300 rounded-lg text-sm">
-            ⚠️ {error}
-          </div>
-        )}
+  return (
+    <AppShell title="History & reports" description="Find previous research runs and open generated reports." action={<a href="/" className="primary-button">New research</a>}>
+      <div className="page-stack">
+        <div className="search-field"><Search size={17} /><input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Search history and reports" />{filter && <button onClick={() => setFilter('')} aria-label="Clear search"><X size={15} /></button>}</div>
+
+        {error && <div className="notice notice-error">{error}</div>}
 
         {loading ? (
           <div className="text-center py-12 text-gray-500">Loading...</div>
@@ -86,7 +75,7 @@ export default function HistoryPage() {
             <div>
               <h2 className="text-xl font-semibold mb-4">Search history</h2>
               <div className="space-y-3">
-                {history.map((item, idx) => (
+                {filteredHistory.map((item, idx) => (
                   <div
                     key={idx}
                     className="bg-white dark:bg-gray-800 rounded-lg shadow p-4 border border-gray-200 dark:border-gray-700"
@@ -103,16 +92,14 @@ export default function HistoryPage() {
                     )}
                   </div>
                 ))}
-                {!history.length && (
-                  <p className="text-sm text-gray-500">No history yet.</p>
-                )}
+                {!filteredHistory.length && <div className="empty-state"><HistoryIcon /><strong>{filter ? 'No matching runs' : 'No research yet'}</strong><span>{filter ? 'Try a different search.' : 'Your completed research runs will appear here.'}</span></div>}
               </div>
             </div>
 
             <div>
               <h2 className="text-xl font-semibold mb-4">Reports on disk</h2>
               <div className="space-y-2 max-h-[70vh] overflow-y-auto">
-                {reports.map((r) => (
+                {filteredReports.map((r) => (
                   <button
                     key={r.name}
                     onClick={() => openReport(r.name)}
@@ -126,9 +113,7 @@ export default function HistoryPage() {
                     </div>
                   </button>
                 ))}
-                {!reports.length && (
-                  <p className="text-sm text-gray-500">No reports in reports/ yet.</p>
-                )}
+                {!filteredReports.length && <div className="empty-state"><FileIcon /><strong>{filter ? 'No matching reports' : 'No reports yet'}</strong><span>Generated reports will appear here.</span></div>}
               </div>
             </div>
           </div>
@@ -153,6 +138,6 @@ export default function HistoryPage() {
           </div>
         )}
       </div>
-    </div>
+    </AppShell>
   )
 }

@@ -2,11 +2,14 @@
 Researcher agent — executes the research loop: search, extract, ingest, retrieve, analyze.
 
 Uses the modular tool bus for search and extraction. Tools are auto-discovered
+import logging
 from the registry: Firecrawl (primary), Wikipedia (free), Built-in Scraper, Exa.
 """
 
+import hashlib
 import json
 import re
+import time
 
 from src.llm import call_llm
 from src.tools import execute_searches, extract_pages as tool_extract
@@ -31,7 +34,7 @@ def _progress(stage: str, status: str = "", **kwargs) -> None:
         from src.engine.progress import get_progress
         get_progress().update(stage=stage, status=status or stage, **kwargs)
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
 
 @register("researcher_gather")
@@ -285,7 +288,7 @@ def researcher_gather(state: ResearchState) -> ResearchState:
                 queries=queries,
             )
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
     state["search_results"] = results
     for r in results[:3]:
@@ -303,7 +306,7 @@ def researcher_gather(state: ResearchState) -> ResearchState:
         from src.engine.progress import get_progress
         get_progress().think("next", f"Extracting up to {max_extract} pages")
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
     # Prefer Exa full text already in results — no re-extract round-trip
     top = results[:max_extract]
@@ -326,8 +329,36 @@ def researcher_gather(state: ResearchState) -> ResearchState:
             })
     record_tool_calls(state, n=1 if need_extract else 0, kind="extract")
     state["extracted_pages"] = extracted
+
+    # ── Fetched-source ledger (citation ship-gate input) ──
+    # Only pages whose content was ACTUALLY retrieved become ledger entries.
+    # Search hits that were never opened are deliberately NOT recorded, so
+    # the compiler's Sources list cannot cite unverified URLs.
+    ledger = dict(state.get("fetched_sources") or {})
+
+    def _ledger_add(url: str, title: str, content: str) -> None:
+        u = canonical_url(url or "")
+        if not u:
+            return
+        prev = ledger.get(u) if isinstance(ledger.get(u), dict) else {}
+        ledger[u] = {
+            "url": u,
+            "title": title or prev.get("title") or u,
+            "status": "fetched",
+            "content_hash": hashlib.sha256((content or "").encode("utf-8")).hexdigest()[:16],
+            "chars": len(content or ""),
+            "fetched_at": time.time(),
+        }
+
+    for p in extracted:
+        _ledger_add(p.get("url"), p.get("title"), p.get("content"))
+    for c in state.get("run_corpus") or []:
+        _ledger_add(c.get("url"), c.get("title") or c.get("url"), c.get("text") or c.get("content"))
+    for c in state.get("retrieved_chunks") or []:
+        _ledger_add(c.get("url"), c.get("title"), c.get("text") or c.get("content"))
+    state["fetched_sources"] = ledger
     print(f"  Content pages: {len(extracted)} ({len(already_full)} from Exa text, "
-          f"{len(need_extract)} extracted)")
+          f"{len(need_extract)} extracted), ledger={len(ledger)}")
 
     # Full-text corpus (Tier-2 #13): pages actually fetched this run become
     # searchable vault entries — "research once, search web".
@@ -336,7 +367,7 @@ def researcher_gather(state: ResearchState) -> ResearchState:
         try:
             Vault().store_pages(extracted, queries=queries)
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
     # ── Fruitless gate bookkeeping ──
     # Search: did this round surface any URL we haven't already consulted?
@@ -486,6 +517,27 @@ def researcher_analyze(state: ResearchState) -> ResearchState:
             run_corpus.append(r)
     state["run_corpus"] = run_corpus
 
+    # Keep the fetched-source ledger in sync with newly retrieved chunks
+    # (retrieval happens every iteration; the gather-side ledger merge above
+    # only saw the previous iteration's corpus).
+    ledger = dict(state.get("fetched_sources") or {})
+    for r in results:
+        u = canonical_url(r.get("url") or "")
+        if not u:
+            continue
+        prev = ledger.get(u) if isinstance(ledger.get(u), dict) else {}
+        ledger[u] = {
+            "url": u,
+            "title": r.get("title") or prev.get("title") or u,
+            "status": "fetched",
+            "content_hash": hashlib.sha256(
+                (r.get("text") or "").encode("utf-8")
+            ).hexdigest()[:16],
+            "chars": len(r.get("text") or ""),
+            "fetched_at": time.time(),
+        }
+    state["fetched_sources"] = ledger
+
     if results:
         retrieved_tokens = sum(len(r.get("text", "").split()) * 1.3 for r in results)
         raw_est = sum(len(p.get("content", "").split()) * 1.3 for p in state.get("extracted_pages", []))
@@ -521,7 +573,10 @@ Content:
 
 Return a JSON object with:
   - "findings": list of 5-10 key findings (each a string)
-  - "claims": list of claim objects: {{"text": "...", "evidence_ids": ["url1", "url2"], "confidence": "high"|"medium"|"low"}}
+  - "claims": list of claim objects: {{"text": "...", "atoms": ["atomic fact 1"], "evidence": [{{"url": "fetched URL", "quote": "verbatim contiguous quote"}}], "evidence_ids": ["url1"], "confidence": "high"|"medium"|"low"}}
+    Every supported atom MUST have a verbatim quote copied from Content. Do not
+    invent quotes or use a search-result URL without fetched text; use an empty
+    evidence list when the content does not support the claim.
   - "gaps": list of unanswered questions or missing information
   - "confidence": overall confidence: "high", "medium", or "low\""""
 
@@ -579,16 +634,21 @@ Return a JSON object with:
         u = canonical_url(c.get("url") or "")
         if u:
             known_urls.add(u)
-    for r in state.get("search_results") or []:
-        u = canonical_url(r.get("url") or "")
-        if u:
-            known_urls.add(u)
     for p in state.get("extracted_pages") or []:
         u = canonical_url(p.get("url") or "")
-        if u:
+        if u and (p.get("content") or ""):
+            known_urls.add(u)
+    for c in state.get("run_corpus") or []:
+        u = canonical_url(c.get("url") or "")
+        if u and (c.get("text") or c.get("content") or ""):
             known_urls.add(u)
     for c in claims:
-        for url in c.get("evidence_ids", []):
+        evidence = c.get("evidence") or []
+        if isinstance(evidence, dict):
+            evidence = [evidence]
+        candidate_urls = list(c.get("evidence_ids", []))
+        candidate_urls.extend(item.get("url") for item in evidence if isinstance(item, dict))
+        for url in candidate_urls:
             cu = canonical_url(url)
             if cu and cu in known_urls:
                 state["evidence_map"].setdefault(cu, []).append(c.get("text", "")[:100])
@@ -646,5 +706,5 @@ Return a JSON object with:
             status=state["status"],
         )
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("ignored error", exc_info=True)
     return state

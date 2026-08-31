@@ -7,6 +7,8 @@ Also supports cross-run vault search for persistent source retrieval.
 
 from __future__ import annotations
 
+import logging
+
 from typing import Optional
 
 from .pipeline import retrieve_chunks as _vector_retrieve
@@ -67,7 +69,7 @@ def hybrid_retrieve(
                 r["source"] = "dense"
                 merged[rid] = r
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
     # ── Sparse (keyword) stream via FTS ──
     if store._fts:
@@ -86,7 +88,7 @@ def hybrid_retrieve(
                 if rid not in merged:
                     merged[rid] = r
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
     # ── Factoid stream ──
     if factoids:

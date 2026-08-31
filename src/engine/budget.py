@@ -1,6 +1,9 @@
 """Runtime budget enforcement for research runs."""
 
+
 from __future__ import annotations
+
+import logging
 
 import time
 from typing import Any
@@ -31,6 +34,12 @@ def check_budgets(state: dict) -> tuple[bool, str]:
     max_tools = int(budgets.get("max_tool_calls") or 0)
     if max_tools > 0 and tool_calls >= max_tools:
         return False, f"Tool-call budget exceeded ({tool_calls} >= {max_tools})"
+
+    # Tokens — previously configured but never enforced anywhere.
+    tokens_used = int(budgets.get("tokens_used") or 0)
+    max_tokens = int(budgets.get("max_tokens") or 0)
+    if max_tokens > 0 and tokens_used >= max_tokens:
+        return False, f"Token budget exceeded ({tokens_used} >= {max_tokens})"
 
     return True, ""
 
@@ -77,7 +86,13 @@ def budget_status_line(state: dict) -> str:
 
 
 def sync_cost_from_metrics(state: dict) -> None:
-    """Best-effort: pull estimated spend from gateway metrics into state budgets."""
+    """Best-effort: pull estimated spend from gateway metrics into state budgets.
+
+    Fallback path only. When a per-run cost sink is wired (graph runs — see
+    ``src.llm.set_run_cost_sink``), ``budgets["spent_usd"]`` is already exact
+    per-run accounting and the global-metrics baseline method must NOT
+    overwrite it; the metric-derived estimate is kept separately instead.
+    """
     try:
         from src.gateway.metrics import DEFAULT_METRICS
         snap = DEFAULT_METRICS.snapshot()
@@ -85,16 +100,20 @@ def sync_cost_from_metrics(state: dict) -> None:
         for _prov, models in (snap.get("per_provider_model") or {}).items():
             for _model, stats in (models or {}).items():
                 total += float(stats.get("cost_usd") or 0)
-        # Store absolute total; delta accounting is approximate across concurrent runs
         budgets = state.setdefault("budgets", {})
         base = float(budgets.get("_cost_baseline") or 0)
         if "_cost_baseline" not in budgets:
             budgets["_cost_baseline"] = total
-            budgets["spent_usd"] = 0.0
-        else:
+            if "tokens_used" not in budgets:
+                budgets["spent_usd"] = 0.0
+        elif "tokens_used" not in budgets:
+            # No per-run sink → legacy global-metrics attribution
             budgets["spent_usd"] = max(0.0, total - base)
+        else:
+            # Per-run sink is the source of truth; keep the estimate aside
+            budgets["spent_usd_metrics_est"] = max(0.0, total - base)
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
 
 def force_complete(state: dict, reason: str) -> dict:

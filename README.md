@@ -2,7 +2,7 @@
 
 # Providence
 
-**Autonomous deep-research engine. Every source in the final report was actually fetched.**
+**Autonomous deep-research engine with fetched-source provenance, adversarial review, and a resilient multi-provider gateway.**
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](https://python.org)
@@ -15,154 +15,92 @@
 
 ---
 
-LLMs hallucinate citations. Most "deep research" wrappers cite pages they never opened. Providence enforces a hard **compiler ship-gate**: the final Sources list is built exclusively from URLs fetched and parsed during that run. No invented references ship.
+Providence is a research system for producing inspectable, source-grounded reports rather than one-shot LLM answers. Its compiler enforces a **fetched-source ship-gate**: final references come only from content received during the current run, and claim support requires URL-attributed verbatim evidence spans.
 
-Under the hood it runs a multi-agent LangGraph pipeline — Scout → Planner → iterative Research loop with Critic → Devil's Advocate → Claim Adjudicator → parallel Section Writers → Compiler. Reports are written section-by-section from retrieved chunks, not from one fragile megaprompt.
+The live LangGraph pipeline combines planning, iterative retrieval, critique, counter-evidence search, span-based claim verification, RAG-grounded section writing, and citation compilation. It is exposed through both a CLI and a Next.js/FastAPI web application.
 
-**Works out of the box with zero API keys.** Add Gemini and Exa whenever you want stronger reasoning and neural search.
+**Zero vendor API keys are required for the default path** (internet access is still required). Add Gemini, Exa, or other providers when you want stronger reasoning, search, or failover options.
+
+![Providence architecture](docs/screenshots/architecture.svg)
+
+### At a glance
+
+| Surface | Purpose |
+|---|---|
+| CLI | Run research, chat, diagnostics, evaluations, and the Temporal worker |
+| Web UI | Chat, background research, plan approval, progress, cancellation, history, vault, and settings |
+| API | FastAPI endpoints with typed request bodies, SSE chat streaming, job polling, and cancellation |
+| Evidence | Fetched-source ledger, verbatim quote spans, character offsets, claim status, and compiler ship-gate |
+| Operations | Provider failover, circuit breakers, retries, rate limits, per-run token/cost accounting, Prometheus metrics |
+| Outputs | Markdown and MathJax-rendered HTML reports |
+
+> **Scope note:** provenance is not a guarantee of truth. The system can verify that a quoted span came from a fetched page; source quality, ambiguity, and model judgment still require human review.
 
 ```bash
-git clone https://github.com/sarv-projects/Autonomous-Research-Agent.git
-cd Autonomous-Research-Agent
+git clone https://github.com/sarv-projects/providence.git
+cd providence
 bash scripts/install.sh
 uv run python main.py research "How does RAG reduce hallucination in LLMs?" --mode standard
 ```
 
 ---
 
-## What Providence Can Do
+## Capabilities
 
-### 🔬 Research any topic — thoroughly
+- Iterative retrieval with a critic that can request another research pass within configured budgets.
+- Counter-evidence search and a bounded Socratic re-gather step for weak claims.
+- Canonical evidence verification: claims require URL-attributed verbatim spans from fetched content; missing or mismatched spans remain uncertain.
+- Per-run hybrid retrieval (LanceDB + FTS5), section-level writing, and a compiler that remaps citations to the final fetched-source list.
+- Provider routing with retries, circuit breakers, rate limits, cost/token accounting, and Prometheus metrics.
 
-Providence is not a single LLM call with a web-search wrapper. It runs a **14-node adversarial pipeline** that scouts, plans, iterates, argues against itself, adjudicates facts, and synthesizes — before the compiler ever writes a single citation:
+Reports are written as Markdown and MathJax-rendered HTML. A completed report includes an analysis body, Evidence Bedrock, Research Debt, and a Sources section. When the evidence or budget gate fails, the compiler can produce a blocked/incomplete result instead.
 
-- **Multi-query iterative retrieval** — the Critic evaluates coverage after each loop and sends the pipeline back out for more targeted searches until the evidence is sufficient or the budget is hit.
-- **Adversarial devil's advocate pass** — a dedicated agent is explicitly tasked with finding counter-evidence, minority views, methodological flaws, and edge cases. These surface in the final report's *Evidence Bedrock* and *Research Debt* sections — not silently dropped.
-- **Socratic claim adjudication** — contested claims are checked against the actual text of retrieved pages. If a claim cannot be grounded, it's flagged or triggers a one-hop re-gather before the report is written.
-- **Cross-source triangulation** — the Triangulator compares findings across independent domains to surface consensus vs. genuine disagreement before synthesis.
-- **Parallel section writing from isolated RAG retrieval** — each report section is written by a dedicated writer agent that retrieves its own relevant chunks from the per-run LanceDB+FTS5 index. No section can hallucinate from another section's context.
-
-### 📋 8 Research modes for every use case
-
-| Mode | Best for |
-|---|---|
-| `quick` | Fast briefs, definitions, quick factual checks (1–3 min) |
-| `standard` | Full iterative research on any complex topic (5–10 min) |
-| `deep` | Critical intelligence where you need every angle covered (10–20 min) |
-| `academic` | Literature reviews, arXiv-first, peer-reviewed citation coverage (8–15 min) |
-| `compare` | Structured A vs B matrix — technology evaluations, trade-off analysis |
-| `recency` | Breaking news, policy changes, fast-moving markets |
-| `ultra-long` | 24-hour durable research surveys via Temporal for the broadest coverage |
-| `chat` | Conversational assistant that escalates complex queries to full research |
-
-### 📄 Reports you can actually trust and use
-
-Every generated report contains four structured, non-optional sections:
-
-- **Inference Body** — the main analysis with inline `[n]` citations remapped to verified sources
-- **Evidence Bedrock** — direct quotes from fetched pages, classified as *supported*, *contested*, or *synthetic*
-- **Research Debt** — explicit log of unanswered sub-questions, coverage gaps, and confidence bounds — Providence tells you what it doesn't know
-- **Sources** — a numbered list of canonical URLs that were fetched and parsed during this specific run; inline citation markers are remapped to this list, orphaned numbers dropped, and no URL from outside the run can appear here
-
-Reports export as both **Markdown** and **MathJax-rendered HTML** with full LaTeX support for mathematical notation.
-
-### 🧠 14 specialized agents, not one
-
-| Agent | Role |
-|---|---|
-| **Scout** | 3 parallel Gemini calls + light web reconnaissance to frame the topic |
-| **Planner** | Decomposes the query into subtasks and a structured research plan |
-| **Thinker (plan refine)** | Gemini pass to identify blind spots in the plan before gathering begins |
-| **Researcher Gather** | Runs the full tool bus — up to 9 retrieval sources per iteration |
-| **Researcher Analyze** | Clusters and extracts structured facts from raw fetched text |
-| **Thinker (contradiction check)** | Detects factual inconsistencies across gathered sources |
-| **Critic** | Evaluates evidence breadth, depth, and topicality; decides whether to loop |
-| **Thinker (search strategy)** | Reformulates queries and identifies unexplored source types for the next loop |
-| **Devil's Advocate** | Actively searches for counter-evidence, limitations, and minority positions |
-| **Claim Adjudicator** | Verifies specific claims against the text of fetched pages (Socratic) |
-| **Triangulator** | Aggregates cross-source consensus before synthesis (on `accurate`/`comprehensive` dials) |
-| **Synthesizer Outline** | Builds the section decomposition plan from the full evidence corpus |
-| **Synthesizer Write** | Parallel section writers — each grounded in its own RAG retrieval |
-| **Compiler** | Assembles the final report, enforces the ship-gate, remaps and validates all citations |
-
-### 🔎 9+ retrieval sources, not just one search API
-
-Providence pulls from multiple tools simultaneously and falls back automatically:
-
-| Tool | Triggered when |
-|---|---|
-| **Exa** neural search | `EXA_API_KEY` set — primary, full page text |
-| **Firecrawl** | `FIRECRAWL_API_KEY` or self-hosted on `:3002` |
-| **Tavily** | `TAVILY_API_KEY` set |
-| **NewsData** | `NEWSDATA_API_KEY` set |
-| **GDELT** | Always available (no key) — global event coverage |
-| **Wikipedia** | Always available (no key) |
-| **DuckDuckGo + Trafilatura** | Built-in scraper — always available (no key) |
-| **arXiv** | Automatically prioritized in `academic` and `deep` modes |
-| **MinerU / Nougat / LlamaParse** | Optional PDF extraction adapters (PyPDF fallback) |
-
-### ⚡ Resilient multi-provider gateway — no single point of failure
-
-Every LLM call goes through `src/gateway/` (no LiteLLM process, pure stdlib HTTP):
-
-- **Circuit breakers** — CLOSED / OPEN / HALF-OPEN per route; automatic recovery after cooldown
-- **Token-bucket rate limiters** — per-provider RPM and TPM caps with real-time accounting
-- **Jitter retry with exponential backoff** — retriable errors (429, 5xx, timeout) retry with backoff; non-retriable (401, 404) move immediately to the next route
-- **Automatic failover** — `nemotron-3-ultra-free` → `hy3-free` → `nemotron-3.5-lightning-free` → `big-pickle` → (paid, if keys present) — seamless, no user action needed
-- **Budget enforcement** — per-run token, cost, time, and tool-call budgets defined per mode in `config/modes.yaml`
-- **Prometheus metrics** — all call counts, token usage, cost, and latency at `/metrics`
-
-### 🗄️ Hybrid RAG — better recall than pure vector search
-
-- **Per-run isolation** — each research run gets its own LanceDB collection, keyed by `run_id`; no cross-contamination between runs
-- **Dual-path retrieval** — dense vector search (OpenAI embeddings if key present, local bag-of-words otherwise) combined with BM25/FTS5 full-text search, fused with Reciprocal Rank Fusion (RRF)
-- **Retriever Guard** — domain scoring, topicality filter, and stop-word gating prevent off-topic chunks from reaching writers
-- **Parent-child chunking** — optional `RAG_PARENT_CHILD=1` for improved recall on long documents
-- **Vault** — `data/vault.db` re-uses on-topic past sources across sessions for research continuity
-- **Factoid extraction** — structured fact atoms extracted from chunks for `ultra-long` / `comprehensive` dial runs
-
-### 🎛️ 3 autonomy levels for every workflow
-
-- **L1 — Fully autonomous** (default): plan to report in one go, no interruptions
-- **L2 — Human-in-the-loop**: Providence surfaces clarifying questions, waits for answers, then shows the full research plan for approval before a single fetch begins
-- **L3 — Unattended batch**: strict spend caps, automated fallback handling, hard export gates — safe for overnight/scheduled runs
-
-### 📊 Empirically evaluated
-
-- **86% fact-check accuracy** across 15 high-complexity research topics scored against independently verified ground truth
-- **0 fabricated source lists** across all 15 runs — the ship-gate works
-- **~8.1 min average** per comprehensive research report on Groq + Exa stack
-- **~48 000 words** largest single report generated
-- **100-task DeepResearch Bench (DRB)** scoring protocol implemented against the same RACE formula used by published leaderboard numbers (Gemini 2.5 Pro ≈ 48.9, OpenAI Deep Research ≈ 47.0)
+Detailed agent, retrieval, and provider behavior lives in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/PROVIDERS.md`](docs/PROVIDERS.md).
 
 ---
 
 ## Table of Contents
 
-- [Why Providence](#why-providence)
+- [Design Goals](#design-goals)
+- [Engineering Highlights](#engineering-highlights)
 - [Architecture](#architecture)
 - [Quickstart](#quickstart)
 - [Research Modes](#research-modes)
 - [Providers & Keys](#providers--keys)
 - [CLI Reference](#cli-reference)
 - [Web UI & Dashboard](#web-ui--dashboard)
+- [Security & Limitations](#security--limitations)
 - [Benchmarks](#benchmarks)
 - [Project Layout](#project-layout)
 - [Testing](#testing)
 - [Docs](#docs)
+- [Contributing](#contributing)
 - [License](#license)
 
 ---
 
-## Why Providence
+## Design Goals
 
-| Problem | What Providence does |
+| Constraint | Implementation |
 |---|---|
 | LLMs invent citations | **Compiler ship-gate** — Sources built from this run's fetch log only. Hallucinated URLs and `example.com` placeholders are dropped before export. |
 | Confirmation bias | **Adversarial pass** — an explicit Devil's Advocate agent hunts counter-evidence and limitations before synthesis begins. |
 | Context-window collapse | **Isolated per-run RAG** — LanceDB + FTS5, dense/keyword RRF. Each run gets its own index; retrieved chunks are the only input to writers. |
 | One-shot megaprompt failures | **Parallel section synthesis** — each section is written from its own targeted chunk retrieval. |
-| Expensive API lock-in | **Resilient multi-provider gateway** — circuit breakers, token-bucket rate limiters, automatic failover. Free Zen models work with no key at all. |
+| Expensive API lock-in | **Resilient multi-provider gateway** — circuit breakers, token-bucket rate limiters, and automatic failover. The default Zen route does not require a vendor key. |
+
+## Engineering Highlights
+
+The repository is designed to be inspectable, testable, and replaceable at the component boundaries:
+
+| Area | Implementation | Start here |
+|---|---|---|
+| Orchestration | Typed LangGraph state with bounded research loops and autonomy gates | [`src/graph.py`](src/graph.py), [`src/state.py`](src/state.py) |
+| Evidence integrity | One canonical verifier; fetched-source ledger; exact quote spans and offsets | [`src/evidence.py`](src/evidence.py), [`src/engine/agents/compiler.py`](src/engine/agents/compiler.py) |
+| Retrieval | Per-run LanceDB/FTS5 hybrid retrieval with guardrails and vault reuse | [`src/rag/pipeline.py`](src/rag/pipeline.py), [`src/rag/hybrid.py`](src/rag/hybrid.py) |
+| Reliability | Retry/failover routing, circuit breakers, rate limits, timeouts, and per-run accounting | [`src/gateway/router.py`](src/gateway/router.py), [`src/gateway/providers.py`](src/gateway/providers.py) |
+| Product surface | Typed FastAPI API plus Next.js UI with SSE chat, background jobs, progress, and cancellation | [`src/web/__init__.py`](src/web/__init__.py), [`frontend/app/page.tsx`](frontend/app/page.tsx) |
+| Verification | Offline integration contracts plus focused gateway and phase suites | [`tests/`](tests/), [`test_gateway.py`](test_gateway.py) |
 
 ---
 
@@ -172,7 +110,7 @@ The A4 LangGraph graph (`src/graph.py`):
 
 ```
 Query
- └─ Scout (Gemini × 3 parallel, web peek)
+ └─ Scout (Gemini when configured + web peek)
      └─ Planner (Zen) → Thinker plan-refine (Gemini, if enabled)
          └─ Research loop ───────────────────────────────────────┐
              Gather (tool bus: Exa / wiki / scraper / GDELT …)  │
@@ -185,14 +123,14 @@ Query
                      └─ Synthesizer outline → parallel section write (Zen strong)
                          └─ Compiler ← ship-gate
                              ├─ Inference Body     (cited analysis)
-                             ├─ Evidence Bedrock   (supported / contested / synthetic)
+                             ├─ Evidence Bedrock   (supported / uncertain / contradicted)
                              ├─ Research Debt      (open gaps, confidence bounds)
                              └─ Sources            (this-run URLs only)
 ```
 
 ```mermaid
 flowchart LR
-    Q([Query]) --> SC[Scout\nGemini × 3]
+    Q([Query]) --> SC[Scout\nGemini if configured]
     SC --> PL[Planner]
     PL --> TR[Thinker\nplan-refine]
     TR --> RG[Gather]
@@ -230,14 +168,14 @@ flowchart LR
 
 ```bash
 # 1. Clone and install
-git clone https://github.com/sarv-projects/Autonomous-Research-Agent.git
-cd Autonomous-Research-Agent
+git clone https://github.com/sarv-projects/providence.git
+cd providence
 bash scripts/install.sh          # Windows: .\scripts\install.ps1
 
 # 2. Verify the setup
 uv run python main.py doctor
 
-# 3. Run (no keys needed)
+# 3. Run (no vendor API key required)
 uv run python main.py research "What are the tradeoffs between SLMs and LLMs?" --mode standard
 ```
 
@@ -258,16 +196,18 @@ TAVILY_API_KEY=     # https://tavily.com                  (additional search)
 
 Pass `--mode <name>`. Default is `standard`.
 
-| Mode | What it does | Typical time |
+| Mode | Use | Configured time cap |
 |---|---|---|
-| `quick` | Short brief, minimal iterations | 1–3 min |
-| `standard` | Full loop, balanced budget | 5–10 min |
-| `deep` | Heavier loop + triangulation, Gemini stays on | 10–20 min |
-| `academic` | arXiv-first, deeper citation coverage | 8–15 min |
-| `compare` | Structured A vs B comparison matrix | 5–10 min |
-| `recency` | Recency-biased search for fast-moving topics | 5–10 min |
-| `ultra-long` | 24-hour durable research via Temporal worker | Long / async |
-| `chat` | Conversational assistant; auto-escalates to research | Interactive |
+| `quick` | Short brief with a smaller retrieval budget | 5 min |
+| `standard` | Default iterative research | 10 min |
+| `deep` | Larger budget with thinker and triangulation enabled | 15 min |
+| `academic` | arXiv-prioritized research | 15 min |
+| `compare` | Structured comparison matrix | 10 min |
+| `recency` | Recency-biased retrieval | 10 min |
+| `ultra-long` | Durable long-running research when Temporal is configured | 24 h |
+| `chat` | Conversational assistant with research escalation | 2 min |
+
+Time caps come from [`config/modes.yaml`](config/modes.yaml); actual latency depends on providers, search, and network conditions.
 
 **Autonomy levels** (`--autonomy L1|L2|L3`):
 
@@ -288,7 +228,7 @@ uv run python main.py research "Post-quantum cryptography standards survey" \
 
 All LLM calls go through `src/gateway/` — circuit breakers, RPM/TPM token-bucket rate limiters, jitter retry, automatic failover. No LiteLLM process.
 
-**Free path (zero keys):**
+**Default path (no vendor API key):**
 - Workhorse: `nemotron-3-ultra-free` → `hy3-free` → `nemotron-3.5-lightning-free` → `big-pickle` (reasoning)
 - Search: DuckDuckGo + Trafilatura + Wikipedia + GDELT
 - Embeddings: local bag-of-words
@@ -302,7 +242,7 @@ All LLM calls go through `src/gateway/` — circuit breakers, RPM/TPM token-buck
 | `FIRECRAWL_API_KEY` | Cloud scraping (local scraper is the fallback) |
 | `TAVILY_API_KEY` | Additional search/extract endpoint |
 | `NEWSDATA_API_KEY` | Newswire access |
-| `EMBEDDING_API_KEY` / `USE_CHAT_KEY_FOR_EMBEDDINGS=1` | Dense vector embeddings for better RAG recall |
+| `EMBEDDING_API_KEY` / `USE_CHAT_KEY_FOR_EMBEDDINGS=1` | Dense vector embeddings |
 | `GROQ_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, … | Override Zen free on `fast`/`strong` tiers |
 
 Full catalog: [`config/providers.yaml`](config/providers.yaml) · [`docs/PROVIDERS.md`](docs/PROVIDERS.md)
@@ -338,7 +278,7 @@ uv run python main.py eval all
 
 ## Web UI & Dashboard
 
-The frontend is a **Next.js 14** app (`frontend/`) wired to the FastAPI backend via rewrites. All `/api/*` requests are proxied to `localhost:8001` — no CORS config needed.
+The frontend is a **Next.js 14** app (`frontend/`) wired to the FastAPI backend via rewrites. In local development, `/api/*` requests are proxied to `localhost:8001` by `next.config.mjs`.
 
 ### Launch the full dev stack
 
@@ -371,7 +311,7 @@ cd frontend && npm run dev
 
 ### Main interface (`/`)
 
-**Chat mode** — streams responses token-by-token via SSE. Automatically escalates long or research-heavy queries to the full research pipeline.
+**Chat mode** — streams responses token-by-token via SSE. May escalate long or research-heavy queries using the configured heuristic.
 
 **Research mode** — dispatches a background job to the A4 pipeline and shows a live **ProgressBanner** while it runs:
 - Status line: current stage, elapsed seconds, findings count, sources count
@@ -430,22 +370,36 @@ uv run python -m src.dashboard --port 8080
 
 ---
 
+## Security & Limitations
+
+- **No production authentication is included by default.** The development API enables permissive CORS and should sit behind an authenticated reverse proxy before public deployment.
+- **Treat external content as untrusted input.** The renderer escapes report text, validates outbound link schemes, and the scraper blocks private/link-local destinations; still review provider and deployment settings before exposing the service.
+- **Keys stay in environment variables.** Do not commit `.env`, provider secrets, generated reports, or local databases.
+- **Evidence is traceability, not truth.** A supported claim has a matching quote span from a fetched source; it is not a substitute for source-quality assessment or domain-expert review.
+- **External dependencies affect results.** Search coverage, provider availability, rate limits, model behavior, and network access affect latency and accuracy.
+- **Temporal is optional.** Without a running Temporal server, `ultra-long` uses the in-process fallback and does not survive a process restart.
+
+For a vulnerability report, see [`SECURITY.md`](SECURITY.md). For changes, see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+---
+
 ## Benchmarks
 
-**Internal 15-topic suite** — Groq + Exa stack, `standard` mode, scored against independently researched ground truth across geopolitical, scientific, financial, and technology domains:
+**Internal topic suite** — scored against independently researched ground truth across geopolitical, scientific, financial, and technology domains. Fact-check accuracy **varies by round** (suite size and configuration differed per round — see each file for its protocol):
 
-| Metric | Result |
-|---|---|
-| Fact-check accuracy | **86%** (76 / 91 verified points) |
-| Fabricated source lists | **0 / 15 runs** |
-| Average run time | **~8.1 min** |
-| Largest report | **~48 000 words** |
+| Round | Fact-check accuracy | Report |
+|---|---|---|
+| R1 (15 topics, Groq + Exa, `standard`) | **0.86** (76 / 91 verified points) | [RESEARCH_BENCHMARK.md](benchmarks/RESEARCH_BENCHMARK.md) |
+| R2 (11 topics) | **0.81** | [RESEARCH_BENCHMARK_R2.md](benchmarks/RESEARCH_BENCHMARK_R2.md) |
+| R3 (latest, comparable topics) | **0.77** | [RESEARCH_BENCHMARK_R3.md](benchmarks/RESEARCH_BENCHMARK_R3.md) |
 
-> On the free Zen + Gemini scout stack, `standard` typically runs 12–18 min. The averages above used Groq + Exa.
+> **Benchmark scope:** fact accuracy was **86%** in Round 1; the latest repeated-subset result is **~77%** in Round 3. These rounds differ in topic count and configuration, so treat them as internal regression measurements, not a general accuracy guarantee. See the per-round reports for the scoring method and limitations.
+
+> On the free Zen + Gemini scout stack, `standard` typically runs 12–18 min. The R1 averages above used Groq + Exa.
 
 Full per-topic rubrics, fact-check matrices, and three scoring rounds: [`benchmarks/RESEARCH_BENCHMARK.md`](benchmarks/RESEARCH_BENCHMARK.md)
 
-**DeepResearch Bench (100-task DRB)** — self-hosted scoring against the official RACE formula (same protocol as published leaderboard numbers: Gemini 2.5 Pro ≈ 48.9, OpenAI Deep Research ≈ 47.0, Perplexity ≈ 42.3). Full protocol: [`score.md`](score.md)
+**DeepResearch Bench (100-task DRB)** — self-hosted runner and local RACE-style scoring workflow. External system scores are not reproduced here and should not be treated as a direct comparison. Full protocol: [`score.md`](score.md)
 
 ---
 
@@ -459,6 +413,7 @@ config/
 src/
   graph.py                  LangGraph A4 pipeline
   state.py                  Typed ResearchState
+  evidence.py               Canonical quote-span verifier
   llm.py                    call_llm() → gateway dispatch
   engine/
     agents/                 planner  researcher  thinker  critic
@@ -475,9 +430,12 @@ src/
   web/                      FastAPI app + SSE streaming
   dashboard/                Gateway ops dashboard
 frontend/                   Next.js 14 UI
+tests/                      Offline integration contracts
 benchmarks/                 Scoring scripts, ground truth, benchmark reports
 docs/                       Architecture, providers, gateway, install
 reports/                    Generated *.md + *.html output
+CONTRIBUTING.md             Development and pull-request workflow
+SECURITY.md                 Vulnerability reporting and deployment warnings
 ```
 
 ---
@@ -488,7 +446,8 @@ reports/                    Generated *.md + *.html output
 uv run python test_phase_a.py     # provider catalog, gateway Zen-free integration
 uv run python test_phase_b.py     # planner, researcher node contracts
 uv run python test_phase_c.py     # RAG retrieval, citation integrity
-uv run python test_phase_d.py     # critic, adversary outputs
+uv run python test_phase_c2.py    # thinker tier and graph integration
+uv run python test_phase_d.py     # tool bus + live adapter integration (network-aware)
 uv run python test_phase_e.py     # claim adjudication, Socratic hop
 uv run python test_phase_f.py     # triangulator
 uv run python test_phase_g.py     # synthesizer outline + section write
@@ -496,9 +455,16 @@ uv run python test_phase_h.py     # compiler ship-gate, citation remapping
 uv run python test_phase_i.py     # export: markdown, HTML
 uv run python test_phase_l.py     # ultra-long / Temporal path
 uv run python test_gateway.py     # gateway routing, circuits, failover
+uv run python -m unittest discover -s tests -p 'test_*.py'  # offline integration contracts
+
+cd frontend && npm run lint && npm run build
 
 uv run python main.py eval all    # full component + system suite
 ```
+
+> **Offline / CI:** suites that need live network (e.g. `test_phase_d.py`) skip
+> cleanly — with exit code 0 — when DNS is unavailable or when
+> `PROVIDENCE_OFFLINE=1` is set, instead of hanging.
 
 ---
 
@@ -510,6 +476,10 @@ uv run python main.py eval all    # full component + system suite
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Agent contracts, RAG pipeline, compiler ship-gate rules |
 | [PROVIDERS.md](docs/PROVIDERS.md) | Zen free model IDs, Gemini setup, optional paid providers |
 | [GATEWAY.md](docs/GATEWAY.md) | Circuit-breaker mechanics, rate limiting, ops dashboard |
+
+## Contributing
+
+Bug reports, focused improvements, and reproducible evaluation results are welcome. Start with [`CONTRIBUTING.md`](CONTRIBUTING.md); security issues belong in [`SECURITY.md`](SECURITY.md), not public issues.
 
 ---
 

@@ -64,10 +64,21 @@ def _load_raw_providers() -> dict:
         return {}
 
 
+_FREE_MODEL_RE = __import__("re").compile(r"(?:free|big[-_ ]?pickle)", __import__("re").IGNORECASE)
+
+
+def _is_free_model(model: str) -> bool:
+    """Match the documented Zen free IDs by model name, including Big Pickle."""
+    return bool(_FREE_MODEL_RE.search(model))
+
+
 def list_catalog_models(discover_remote: bool = True) -> list[dict]:
     """
-    Return picker rows (includes providers missing API keys so UI can show them disabled):
-      {provider, provider_name, model, free, has_key, env_key, base_url, source}
+    Return only free models for the picker.
+
+    Free classification intentionally uses a case-insensitive regex over the
+    model ID/display name: IDs containing ``free`` are free, and Big Pickle is
+    the documented exception whose ID does not contain that word.
     """
     raw = _load_raw_providers()
     providers_raw = raw.get("providers") or {}
@@ -85,6 +96,7 @@ def list_catalog_models(discover_remote: bool = True) -> list[dict]:
         is_zen = key == "opencode_free" or not base_url
         free = is_zen
         env_val = os.getenv(env_key, "") if env_key else ""
+        # Zen free endpoints never require a key, regardless of config claims.
         has_key = is_zen or bool(env_val)
 
         # Effective base
@@ -116,13 +128,19 @@ def list_catalog_models(discover_remote: bool = True) -> list[dict]:
                 ordered.append(m)
 
         for model in ordered:
+            # The picker is deliberately free-only. Do not mark every Zen
+            # catalog/discovered model free: paid Zen models are also returned
+            # by /v1/models.
+            if not is_zen and not _is_free_model(str(model)):
+                continue
+            if is_zen and not _is_free_model(str(model)):
+                continue
             source = "config"
             if model in discovered and model not in configured:
                 source = "remote"
             elif model in discovered and model in configured:
                 source = "config+remote"
-            model_free = free or str(model).endswith(":free") or str(model).endswith("-free") \
-                or model == "big-pickle" or ":free" in str(model)
+            model_free = _is_free_model(str(model))
             rows.append({
                 "provider": key,
                 "provider_name": display,

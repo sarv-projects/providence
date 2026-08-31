@@ -30,7 +30,7 @@ UI:
 
 ```bash
 bash scripts/start-dev.sh
-# API :8000 · UI :3000
+# API :8001 · UI :3000
 ```
 
 ## Windows
@@ -66,4 +66,4 @@ Full catalog: [PROVIDERS.md](PROVIDERS.md) · `config/providers.yaml`.
 | Slow / 429 on Zen free | Wait, or let failover hit the next Zen ID |
 | Weak scout / plan | Set `GEMINI_API_KEY` |
 | Gemini 429 | Scout is 3 parallel calls; free RPM is tight |
-| UI can’t reach API | Backend on :8000; Next rewrites `/api/*` |
+| UI can’t reach API | Backend on :8001; Next rewrites `/api/*` |

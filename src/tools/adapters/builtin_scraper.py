@@ -10,14 +10,22 @@ Also provides a lightweight search capability using DuckDuckGo HTML scraping
 
 from __future__ import annotations
 
+import logging
+
 import json
 import urllib.error
 import urllib.parse
 import urllib.request
 
-import trafilatura
-
 HEADERS = {"User-Agent": "AutonomousResearchAgent/1.0 (+https://github.com)"}
+
+
+def _trafilatura():
+    """Lazy trafilatura import — importing it at module level made the whole
+    adapters package (and everything importing it) fail when the dependency
+    was absent."""
+    import trafilatura
+    return trafilatura
 
 
 def scrape_url(url: str) -> dict:
@@ -28,9 +36,10 @@ def scrape_url(url: str) -> dict:
     if not url:
         return {}
     try:
-        downloaded = trafilatura.fetch_url(url)
+        t = _trafilatura()
+        downloaded = t.fetch_url(url)
         if downloaded:
-            markdown = trafilatura.extract(
+            markdown = t.extract(
                 downloaded,
                 output_format="markdown",
                 include_links=True,
@@ -39,7 +48,7 @@ def scrape_url(url: str) -> dict:
                 title_line = markdown.split("\n")[0].strip("# ").strip()
                 return {"url": url, "content": markdown, "title": title_line}
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("ignored error", exc_info=True)
     return {}
 
 

@@ -16,7 +16,7 @@ Next.js 14 · React 18 · TypeScript · Tailwind · Lucide · react-markdown
 
 ## Setup
 
-Backend API on **:8000** (see root README).
+Backend API on **:8001** by default (see root README).
 
 ```bash
 cd frontend

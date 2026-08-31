@@ -13,6 +13,8 @@ connections on every call during the research loop.
 
 from __future__ import annotations
 
+import logging
+
 import hashlib
 import os
 import uuid
@@ -206,4 +208,4 @@ def begin_run(run_id: str) -> None:
     try:
         store.delete_by_run(run_id)
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("ignored error", exc_info=True)

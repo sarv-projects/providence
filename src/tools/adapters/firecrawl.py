@@ -17,6 +17,8 @@ Modes supported:
 
 from __future__ import annotations
 
+import logging
+
 import json
 import os
 import urllib.error
@@ -158,7 +160,7 @@ def firecrawl_scrape(url: str) -> Dict:
                 if content:
                     return {"url": url, "content": content, "title": title}
             except Exception:
-                pass
+                logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
     # Native fallback
     from .builtin_scraper import scrape_url

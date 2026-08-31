@@ -14,7 +14,7 @@ With the dev stack running (`bash scripts/start-dev.sh`):
 2. Settings → http://localhost:3000/settings
 3. Vault → http://localhost:3000/vault
 4. History → http://localhost:3000/history
-5. API docs → http://localhost:8000/docs
+5. API docs → http://localhost:8001/docs
 
 Suggested filenames for README:
 

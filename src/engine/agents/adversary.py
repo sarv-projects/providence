@@ -7,13 +7,15 @@ Adversarial / Socratic steal from Ultra blueprint:
 
 from __future__ import annotations
 
+import logging
+
 import json
 import re
 
 from src.llm import call_llm
-from src.rag.guard import STOP_WORDS
 from src.state import ResearchState
 from src.urlutil import canonical_url
+from src.evidence import verify_claims
 from .registry import register
 
 
@@ -22,7 +24,7 @@ def _progress(stage: str, status: str = "", **kwargs) -> None:
         from src.engine.progress import get_progress
         get_progress().update(stage=stage, status=status or stage, **kwargs)
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
 
 def _corpus(state: ResearchState) -> str:
@@ -38,89 +40,6 @@ def _corpus(state: ResearchState) -> str:
         parts.append((r.get("raw_content") or r.get("content") or "")[:1500])
     parts.extend(state.get("findings") or [])
     return " ".join(parts).lower()
-
-
-def _claim_support(
-    claim_text: str,
-    corpus: str,
-    evidence_ids: list,
-    known_urls: set[str] | None = None,
-    url_text: dict[str, str] | None = None,
-) -> tuple[str, float, list[str]]:
-    """Return (status, score, verified_eids). status: supported | contested | synthetic.
-
-    Evidence verification (P0.4 fix):
-      - Status is decided by corpus match (the claim's words appearing in what
-        this run actually read) — as before.
-      - The claim's verifiable evidence URLs are FILTERED to URLs actually
-        retrieved this run; LLM-fabricated IDs never make it into the returned
-        evidence list (so they can't reach Bedrock/Sources).
-      - If a claim cites a real retrieved URL whose own text does NOT support
-        the claim (real-but-irrelevant), it is demoted to contested.
-    """
-    text = (claim_text or "").strip()
-    if not text:
-        return "synthetic", 0.0, []
-
-    # factoid:// and empty IDs are not verifiable URLs — treated as "no evidence"
-    real_eids = [canonical_url(e) for e in (evidence_ids or [])[:5] if e and not e.startswith("factoid:")]
-    # Keep only URLs actually retrieved this run
-    verified_eids: list[str] = []
-    for eid in real_eids:
-        if known_urls is not None and eid in known_urls:
-            verified_eids.append(eid)
-
-    words = re.findall(r"[a-zA-Z]{4,}", text.lower())
-    if len(words) < 4:
-        # Short claims keep their verified evidence (just weak status)
-        return "synthetic", 0.2, verified_eids
-
-    # ── Corpus-wide lexical match (claim appears in what we read) ──
-    # Skip stopword-heavy trigrams ("as well as") so generic phrasing alone
-    # cannot mark a claim supported.
-    phrases = []
-    for i in range(len(words) - 2):
-        ph = words[i : i + 3]
-        if sum(1 for w in ph if w in STOP_WORDS) >= 2:
-            continue
-        phrases.append(" ".join(ph))
-    phrase_hits = sum(1 for ph in phrases[:8] if ph in corpus)
-    word_hits = sum(1 for w in words[:14] if w in corpus)
-    # Normalize by the claim's own length so short claims with near-total word
-    # overlap (e.g. the core topic sentence) aren't unfairly penalized by a
-    # fixed 14-word denominator.
-    score = min(1.0, phrase_hits * 0.35 + (word_hits / max(4, len(words[:14]))) * 0.65)
-
-    # ── Per-URL topicality: does the cited page's own text support the claim? ──
-    url_supports = False
-    src_seen = False
-    for eid in verified_eids:
-        src = ((url_text or {}).get(eid, "") or "")[:4000].lower()
-        if src:
-            src_seen = True
-            src_phrases = []
-            for i in range(max(0, len(words) - 2)):
-                ph = words[i : i + 3]
-                if sum(1 for w in ph if w in STOP_WORDS) >= 2:
-                    continue
-                src_phrases.append(" ".join(ph))
-            src_hits = sum(1 for ph in src_phrases[:8] if ph in src)
-            src_word_hits = sum(1 for w in words[:12] if w in src)
-            if src_hits >= 1 or src_word_hits >= max(3, min(6, len(words[:12]) // 2)):
-                url_supports = True
-                break
-
-    # Real-but-irrelevant: claim cites a retrieved URL whose text does NOT
-    # support it → contested (this is the topicality backstop for high-rep
-    # domains the guard demotes but cannot block).
-    if verified_eids and src_seen and not url_supports:
-        return "contested", max(score * 0.6, 0.2), verified_eids
-
-    if phrase_hits >= 1 or score >= 0.45:
-        return "supported", min(1.0, score + (0.15 if url_supports else 0.0)), verified_eids
-    if score >= 0.28 or word_hits >= 4:
-        return "contested", score, verified_eids
-    return "synthetic", score, verified_eids
 
 
 # ── Tier-2 #14: DeepVerifier-style atomic verification ────────────────────
@@ -349,7 +268,7 @@ def devil_advocate_gather(state: ResearchState) -> ResearchState:
         from src.engine.progress import get_progress
         get_progress().think("next", f"Counter-search: {counter_queries[0][:100]}")
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
     results = execute_searches(counter_queries, max_results=6)
     record_tool_calls(state, n=len(counter_queries), kind="search")
@@ -406,80 +325,15 @@ def claim_adjudicator(state: ResearchState) -> ResearchState:
         state["socratic_reopen"] = False
         return state
 
-    claims = list(state.get("claims") or [])
-    corpus = _corpus(state)
-    # Known-retrieved URL set + per-URL text (only URLs from THIS run count).
-    # Claims accumulate across research iterations, so the known set is the union
-    # of the cumulative evidence_map (which researcher_analyze already filtered to
-    # actually-retrieved URLs) plus the current iteration's retrieval state.
-    known_urls: set[str] = set()
-    url_text: dict[str, str] = {}
-    for u in (state.get("evidence_map") or {}):
-        known_urls.add(canonical_url(u))
-    for c in state.get("run_corpus") or []:
-        u = canonical_url(c.get("url") or "")
-        if u:
-            known_urls.add(u)
-            url_text.setdefault(u, "")
-            url_text[u] += " " + (c.get("text") or "")
-    for c in state.get("retrieved_chunks") or []:
-        u = canonical_url(c.get("url") or "")
-        if u:
-            known_urls.add(u)
-            url_text.setdefault(u, "")
-            url_text[u] += " " + (c.get("text") or "")
-    for p in state.get("extracted_pages") or []:
-        u = canonical_url(p.get("url") or "")
-        if u:
-            known_urls.add(u)
-            url_text.setdefault(u, "")
-            url_text[u] += " " + (p.get("content") or "")[:4000]
-    for r in state.get("search_results") or []:
-        u = canonical_url(r.get("url") or "")
-        if u:
-            known_urls.add(u)
-            url_text.setdefault(u, "")
-            url_text[u] += " " + (r.get("raw_content") or r.get("content") or "")[:4000]
-
-    adjudicated = []
-    contested = []
-    synthetic = []
-    supported_n = 0
-    evidence_graph: list[dict] = []
-
-    for idx, c in enumerate(claims):
-        text = c.get("text") or ""
-        eids = c.get("evidence_ids") or []
-        status, score, verified_eids = _claim_support(text, corpus, eids, known_urls, url_text)
-        row = {
-            "text": text[:400],
-            "status": status,
-            "score": round(score, 3),
-            "evidence_ids": verified_eids[:5],
-        }
-        adjudicated.append(row)
-        if status == "supported":
-            supported_n += 1
-        elif status == "contested":
-            contested.append(row)
-        else:
-            synthetic.append(row)
-        # Evidence graph (Argus): claim → evidence edges with relation label.
-        # One edge PER verified evidence URL (multi-evidence claims are honest);
-        # a claim with no verified evidence gets a single unsupported leaf edge.
-        relation = (
-            "support"
-            if status == "supported"
-            else ("contradiction" if status == "contested" else "unsupported")
-        )
-        for eid in (verified_eids[:5] or [""]):
-            evidence_graph.append({
-                "claim_id": f"C{idx + 1}",
-                "claim": text[:200],
-                "evidence_url": eid,
-                "relation": relation,
-                "score": round(score, 3),
-            })
+    # The same span verifier is used here and by the compiler ship gate.
+    # Search-result rows are not documents and cannot enter this path.
+    verified = verify_claims(state)
+    adjudicated = verified["claims"]
+    evidence_graph = verified["graph"]
+    state["verified_spans"] = verified["spans"]
+    contested = [row for row in adjudicated if row.get("status") == "contradicted"]
+    synthetic = [row for row in adjudicated if row.get("status") != "supported"]
+    supported_n = sum(1 for row in adjudicated if row.get("status") == "supported")
 
     state["adjudicated_claims"] = adjudicated
     state["contested_claims"] = contested
@@ -557,7 +411,7 @@ def claim_adjudicator(state: ResearchState) -> ResearchState:
             get_progress().think("gap", f"{len(contested)} contested + {len(synthetic)} synthetic claims")
             get_progress().think("next", "Socratic re-gather on contested claims")
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("ignored error", exc_info=True)
     else:
         state["socratic_reopen"] = False
         state["socratic_done"] = True
@@ -582,7 +436,7 @@ def claim_adjudicator(state: ResearchState) -> ResearchState:
                 if data.get("confidence_note"):
                     state["confidence_note"] = str(data["confidence_note"])[:400]
             except Exception:
-                pass
+                logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
     try:
         from src.engine.progress import get_progress
@@ -591,7 +445,7 @@ def claim_adjudicator(state: ResearchState) -> ResearchState:
             findings_count=len(state.get("findings") or []),
         )
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("ignored error", exc_info=True)
     state["status"] = (
         f"Adjudication: {supported_n} supported / {len(contested)} contested / "
         f"{len(synthetic)} synthetic"

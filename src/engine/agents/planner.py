@@ -9,6 +9,7 @@ Outputs:
   - First wave of search queries
 """
 
+import logging
 import json
 import re
 
@@ -116,7 +117,7 @@ def planner(state: ResearchState) -> ResearchState:
             get_progress().update(stage="planning", status=state["status"], plan=plan)
             get_progress().think("next", "Approved plan — starting research gather")
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("ignored error", exc_info=True)
         return state
 
     state["status"] = "Planning research..."
@@ -125,7 +126,7 @@ def planner(state: ResearchState) -> ResearchState:
         get_progress().update(stage="planning", status=state["status"])
         get_progress().think("next", "Decomposing query into research plan")
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("ignored error", exc_info=True)
     print(f"\n🧠 [Planner] Analyzing query: {state['query'][:80]}")
 
     # ── Query-type classification (Anthropic) → drives plan shape + budgets ──
@@ -253,5 +254,5 @@ Example outline entry:
         get_progress().update(stage="planning", status=state["status"], plan=plan)
         get_progress().think("learned", f"Plan topic: {plan.get('topic', '')[:120]}")
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("ignored error", exc_info=True)
     return state

@@ -15,6 +15,8 @@ Integrity:
 
 from __future__ import annotations
 
+import logging
+
 import threading
 import time
 
@@ -46,22 +48,33 @@ def after_adjudicator(state: ResearchState) -> str:
 def build_graph() -> StateGraph:
     builder = StateGraph(ResearchState)
 
+    def cancellable(agent):
+        """Check the job between graph nodes for cooperative cancellation."""
+        def wrapped(state: ResearchState) -> ResearchState:
+            job_id = state.get("job_id")
+            if job_id:
+                from src.engine.jobs import get_jobs
+                if get_jobs().is_cancelled(job_id):
+                    raise RuntimeError("Research cancelled by user")
+            return agent(state)
+        return wrapped
+
     # Scout first (web + parallel Gemini), then plan
-    builder.add_node("thinker_query_scout", get_agent("thinker_query_scout"))
-    builder.add_node("planner", get_agent("planner"))
-    builder.add_node("thinker_plan_refine", get_agent("thinker_plan_refine"))
-    builder.add_node("researcher_gather", get_agent("researcher_gather"))
-    builder.add_node("researcher_analyze", get_agent("researcher_analyze"))
-    builder.add_node("thinker_contradiction_check", get_agent("thinker_contradiction_check"))
-    builder.add_node("critic", get_agent("critic"))
-    builder.add_node("thinker_search_strategy", get_agent("thinker_search_strategy"))
+    builder.add_node("thinker_query_scout", cancellable(get_agent("thinker_query_scout")))
+    builder.add_node("planner", cancellable(get_agent("planner")))
+    builder.add_node("thinker_plan_refine", cancellable(get_agent("thinker_plan_refine")))
+    builder.add_node("researcher_gather", cancellable(get_agent("researcher_gather")))
+    builder.add_node("researcher_analyze", cancellable(get_agent("researcher_analyze")))
+    builder.add_node("thinker_contradiction_check", cancellable(get_agent("thinker_contradiction_check")))
+    builder.add_node("critic", cancellable(get_agent("critic")))
+    builder.add_node("thinker_search_strategy", cancellable(get_agent("thinker_search_strategy")))
     # Ultra steals
-    builder.add_node("devil_advocate_gather", get_agent("devil_advocate_gather"))
-    builder.add_node("claim_adjudicator", get_agent("claim_adjudicator"))
-    builder.add_node("triangulator", get_agent("triangulator"))
-    builder.add_node("synthesizer_outline", get_agent("synthesizer_outline"))
-    builder.add_node("synthesizer_write", get_agent("synthesizer_write"))
-    builder.add_node("compiler", get_agent("compiler"))
+    builder.add_node("devil_advocate_gather", cancellable(get_agent("devil_advocate_gather")))
+    builder.add_node("claim_adjudicator", cancellable(get_agent("claim_adjudicator")))
+    builder.add_node("triangulator", cancellable(get_agent("triangulator")))
+    builder.add_node("synthesizer_outline", cancellable(get_agent("synthesizer_outline")))
+    builder.add_node("synthesizer_write", cancellable(get_agent("synthesizer_write")))
+    builder.add_node("compiler", cancellable(get_agent("compiler")))
 
     def _abort_passthrough(state: ResearchState) -> ResearchState:
         """Skip synth when aborted — go straight to compiler with error note."""
@@ -180,7 +193,7 @@ def create_research_plan(
     try:
         state = thinker_plan_refine(state)
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
     plan = state.get("plan") or {}
     outline = state.get("outline") or []
@@ -209,6 +222,10 @@ def run_research(
     plan_id: str = "",
     clarifications: dict | None = None,
     skip_clarify: bool = False,
+    model: str | None = None,
+    max_cost_usd: float | None = None,
+    max_iterations_override: int | None = None,
+    max_tokens: int | None = None,
 ) -> ResearchState:
     """Run multi-agent research.
 
@@ -239,7 +256,11 @@ def run_research(
 
         def _worker() -> None:
             try:
+                if get_jobs().is_cancelled(job.job_id):
+                    return
                 get_jobs().update(job.job_id, status="running", started_at=time.time())
+                if get_jobs().is_cancelled(job.job_id):
+                    return
                 # L2 background without approved plan → generate plan first, pause
                 if autonomy.upper() == "L2" and not approved_plan:
                     payload = create_research_plan(
@@ -250,6 +271,7 @@ def run_research(
                         status="awaiting_plan",
                         stage="plan_review",
                         plan=payload.get("plan") or {},
+                        plan_id=payload.get("plan_id") or "",
                         next_action="Edit/approve research plan",
                         run_id="",
                     )
@@ -270,14 +292,19 @@ def run_research(
                     plan_id=plan_id,
                     clarifications=clarifications,
                     skip_clarify=skip_clarify,
+                    model=model,
+                    max_cost_usd=max_cost_usd,
+                    max_iterations_override=max_iterations_override,
+                    max_tokens=max_tokens,
                 )
             except Exception as e:
-                get_jobs().update(
-                    job.job_id,
-                    status="error",
-                    error=str(e),
-                    finished_at=time.time(),
-                )
+                if not get_jobs().is_cancelled(job.job_id):
+                    get_jobs().update(
+                        job.job_id,
+                        status="error",
+                        error="Research failed; see server logs",
+                        finished_at=time.time(),
+                    )
 
         threading.Thread(target=_worker, daemon=True).start()
         st = initial_state(query)
@@ -286,29 +313,12 @@ def run_research(
         return st
 
     from src.engine.modes import load_modes, get_mode
-    from src.engine.progress import get_progress
-    from src.engine.agents.thinker import (
-        disable_thinker as _disable_thinker,
-        reset_thinker as _reset_thinker,
-    )
-    from src.engine.agents.triangulator import (
-        disable_triangulator as _disable_triangulator,
-        reset_triangulator as _reset_triangulator,
-    )
-    from src.rag.pipeline import begin_run
-    from src.engine.clarify import apply_clarifications, generate_clarifying_questions
+    from src.engine.progress import start_run_progress, end_run_progress
 
     registry = load_modes()
     mode_config = get_mode(registry, mode)
     dial = mode_config.quality
     budgets = mode_config.budgets
-
-    _reset_thinker()
-    _reset_triangulator()
-    if not dial.thinker_enabled:
-        _disable_thinker()
-    if not dial.triangulation_enabled:
-        _disable_triangulator()
 
     # Intensity: breadth with Exa, but bounded wall-time (free LLMs are the bottleneck)
     intensity = {
@@ -322,7 +332,50 @@ def run_research(
     }.get(mode, {"max_search_results": 8, "max_extract_pages": 8})
 
     max_iters = intensity.get("max_iterations", budgets.max_iterations)
-    progress = get_progress()
+    if max_iterations_override is not None and int(max_iterations_override) > 0:
+        max_iters = max(1, min(int(max_iterations_override), 100))
+
+    # Per-run progress isolation: bind a run-scoped progress object to this
+    # thread and register it under job_id — concurrent runs each mutate their
+    # own instance instead of clobbering one global (web endpoints read it
+    # back via get_progress_by_job). The old archive-based fallback in
+    # ResearchProgress remains for non-registered runs.
+    progress = start_run_progress(job_id)
+    try:
+        return _run_research_inner(
+            query, mode=mode, autonomy=autonomy, job_id=job_id, plan_id=plan_id,
+            approved_plan=approved_plan, clarifications=clarifications,
+            skip_clarify=skip_clarify, mode_config=mode_config, registry=registry,
+            dial=dial, budgets=budgets, intensity=intensity, max_iters=max_iters,
+            progress=progress, model=model, max_cost_usd=max_cost_usd,
+            max_tokens=max_tokens,
+        )
+    finally:
+        end_run_progress()
+
+
+def _run_research_inner(
+    query, *, mode, autonomy, job_id, plan_id, approved_plan, clarifications,
+    skip_clarify, mode_config, registry, dial, budgets, intensity, max_iters,
+    progress, model=None, max_cost_usd=None, max_tokens=None,
+):
+    from src.engine.agents.thinker import (
+        disable_thinker as _disable_thinker,
+        reset_thinker as _reset_thinker,
+    )
+    from src.engine.agents.triangulator import (
+        disable_triangulator as _disable_triangulator,
+        reset_triangulator as _reset_triangulator,
+    )
+    from src.rag.pipeline import begin_run
+    from src.engine.clarify import apply_clarifications, generate_clarifying_questions
+
+    _reset_thinker()
+    _reset_triangulator()
+    if not dial.thinker_enabled:
+        _disable_thinker()
+    if not dial.triangulation_enabled:
+        _disable_triangulator()
 
     # Optional clarify enrichment for L1 when answers provided
     work_query = query
@@ -335,7 +388,7 @@ def run_research(
             if c.get("questions"):
                 progress.think("gap", f"Ambiguity notes: {c['questions'][0][:160]}")
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
     state = initial_state(work_query, max_iterations=max_iters)
     run_id = state["run_id"]
@@ -355,9 +408,11 @@ def run_research(
                 stage="starting",
             )
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
     max_cost = budgets.max_cost_usd
+    if max_cost_usd is not None and float(max_cost_usd) > 0:
+        max_cost = min(float(max_cost_usd), 1000.0)
     max_time = budgets.max_time_s
     if autonomy == "L3":
         max_cost = min(max_cost, max_cost * 0.8 if max_cost > 0 else 0.4)
@@ -383,7 +438,7 @@ def run_research(
     state["plan_id"] = plan_id
     state["clarifications"] = clarifications or {}
     state["quality"] = {
-        "max_tokens_per_call": dial.max_tokens_per_call,
+        "max_tokens_per_call": int(max_tokens or dial.max_tokens_per_call),
         "max_search_results": intensity.get("max_search_results", dial.max_search_results),
         "max_extract_pages": intensity.get("max_extract_pages", dial.max_extract_pages),
         "thinker_enabled": dial.thinker_enabled,
@@ -392,14 +447,18 @@ def run_research(
         "factoid_enabled": bool(dial.factoid_enabled),
     }
     state["budgets"] = {
-        "max_tokens": budgets.max_tokens,
+        "max_tokens": int(budgets.max_tokens),
         "max_cost_usd": max_cost,
         "max_time_s": max_time,
-        "max_tool_calls": max(budgets.max_tool_calls, 40 if mode in ("deep", "ultra-long") else 25),
+        # Honor the configured limit; only fall back to a mode default when
+        # the config leaves it unset/zero (previously max() silently raised
+        # configured limits to a forced 25/40 minimum).
+        "max_tool_calls": budgets.max_tool_calls or (40 if mode in ("deep", "ultra-long") else 25),
         "max_iterations": max_iters,
         "started_at": time.time(),
         "tool_calls": 0,
         "spent_usd": 0.0,
+        "tokens_used": 0,
     }
     state["mode_flags"] = {
         "recency_bias": mode_config.recency_bias,
@@ -432,9 +491,23 @@ def run_research(
             from src.engine.temporal.activities import register_approval_request
             register_approval_request("plan", {"query": query, "mode": mode, "autonomy": autonomy})
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
     graph = build_graph()
+
+    # Per-run cost/token accounting: route every LLM call made on this thread
+    # straight into this run's budgets (replaces the race-prone global-metrics
+    # baseline approach for runs that go through here).
+    from src.llm import set_run_cost_sink, clear_run_cost_sink
+
+    def _run_cost_sink(prompt_tokens: int, completion_tokens: int, cost_usd: float) -> None:
+        b = state.setdefault("budgets", {})
+        b["tokens_used"] = int(b.get("tokens_used") or 0) + int(prompt_tokens) + int(completion_tokens)
+        b["spent_usd"] = float(b.get("spent_usd") or 0) + float(cost_usd)
+
+    set_run_cost_sink(_run_cost_sink)
+    from src.llm import set_run_request_context, clear_run_request_context
+    set_run_request_context(model=model, max_tokens=int(max_tokens or dial.max_tokens_per_call))
     try:
         result = graph.invoke(state)
         if mode_config.structured_output or mode == "compare":
@@ -469,14 +542,22 @@ def run_research(
                 from src.engine.plan_store import get_plans
                 get_plans().update(plan_id, status="complete", job_id=job_id)
             except Exception:
-                pass
+                logging.getLogger(__name__).debug("ignored error", exc_info=True)
         return result
     except Exception as e:
-        progress.update(stage="error", finished=True, error=str(e))
+        logging.getLogger(__name__).exception("Research graph failed: %s", e)
+        progress.update(stage="error", finished=True, error="Research failed; see server logs")
         if job_id:
             from src.engine.jobs import get_jobs
-            get_jobs().update(job_id, status="error", error=str(e), finished_at=time.time())
+            if not get_jobs().is_cancelled(job_id):
+                get_jobs().update(
+                    job_id, status="error", error="Research failed; see server logs",
+                    finished_at=time.time(),
+                )
         raise
+    finally:
+        clear_run_cost_sink()
+        clear_run_request_context()
 
 
 def _ensure_compare_structure(state: ResearchState) -> ResearchState:

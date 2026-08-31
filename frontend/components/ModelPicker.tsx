@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { apiGet, apiPost } from '@/lib/api'
 
 type ModelRow = {
@@ -37,6 +37,7 @@ export function ModelPicker({ selected, onSelect }: ModelPickerProps) {
   const [error, setError] = useState('')
   const [note, setNote] = useState('')
   const [expanded, setExpanded] = useState<string>('opencode_free')
+  const freeGroups = useMemo(() => groups.filter((g) => g.models.length > 0), [groups])
 
   async function load(probeZen = false) {
     setLoading(true)
@@ -121,7 +122,7 @@ export function ModelPicker({ selected, onSelect }: ModelPickerProps) {
         <div>
           <h2 className="text-xl font-semibold">Model picker</h2>
           <p className="text-xs text-gray-500 mt-1">
-            Default: <strong>OpenCode Zen free</strong> (no key). Expand a provider for full model list.
+            Showing free models only. OpenCode Zen free endpoints need no API key.
           </p>
         </div>
         <div className="flex gap-2">
@@ -153,7 +154,7 @@ export function ModelPicker({ selected, onSelect }: ModelPickerProps) {
       )}
 
       <div className="space-y-3">
-        {groups.map((g) => {
+        {freeGroups.map((g) => {
           const open = expanded === g.provider
           const okCount = g.models.filter((m) => m.status === 'ok').length
           const failCount = g.models.filter((m) => m.status === 'fail').length
@@ -209,7 +210,7 @@ export function ModelPicker({ selected, onSelect }: ModelPickerProps) {
                       onClick={() => probeProvider(g.provider)}
                       className="text-xs px-2 py-1 rounded bg-gray-800 text-white dark:bg-gray-200 dark:text-gray-900 disabled:opacity-40"
                     >
-                      Test all {g.provider_name} models
+                      Test all free {g.provider_name} models
                     </button>
                   </div>
                   <div className="divide-y divide-gray-100 dark:divide-gray-700">

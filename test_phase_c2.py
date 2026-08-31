@@ -71,16 +71,24 @@ def test_gateway_thinker_tier():
     from src.llm import reset_gateway
     reset_gateway()
 
-    # Manually check gateway routes — thinker tier always has Zen free fallback
+    # Policy (config/providers.yaml + gateway/__init__.py): the thinker tier
+    # is Gemini-only — it is deliberately NOT backfilled with Zen free, so
+    # reasoning nodes keep a stronger model when a GEMINI_API_KEY exists.
+    # This test previously expected a Zen fallback (stale); it now asserts
+    # the actual policy.
     from src.gateway import build_gateway_from_env
     gw = build_gateway_from_env()
     thinker_routes = gw.get_routes("thinker")
 
-    # Should have at least the Zen free routes
-    assert len(thinker_routes) > 0, f"No thinker routes at all"
-    has_free = any("opencode_free" in r.name for r in thinker_routes)
-    assert has_free, f"Thinker routes should include Zen free: {[r.name for r in thinker_routes]}"
-    print(f"5/8 gateway thinker tier has {len(thinker_routes)} routes OK")
+    assert len(thinker_routes) > 0, "No thinker routes at all"
+    names = [r.name for r in thinker_routes]
+    has_gemini = any("gemini" in n.lower() for n in names)
+    assert has_gemini, f"Thinker routes should be Gemini-only per policy, got: {names}"
+    has_free = any("opencode_free" in n for n in names)
+    assert not has_free, (
+        f"Thinker tier must NOT be backfilled with Zen free (Gemini-only policy): {names}"
+    )
+    print(f"5/8 gateway thinker tier Gemini-only ({len(thinker_routes)} routes) OK")
 
 
 # ── 3. Graph integration ────────────────────────────────────────────────

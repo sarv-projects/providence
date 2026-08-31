@@ -7,6 +7,8 @@ when more research is needed.
 
 from __future__ import annotations
 
+import logging
+
 import json
 import re
 
@@ -103,7 +105,7 @@ def critic(state: ResearchState) -> ResearchState:
         )
         p.think("next", "Critic reviewing findings vs query")
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("ignored error", exc_info=True)
     print(f"\n🔎 [Critic] Evaluating iteration {iteration}/{max_iter}")
 
     # ── Hard off-topic gate (P0.2) ──
@@ -155,7 +157,7 @@ def critic(state: ResearchState) -> ResearchState:
             get_progress().think("gap", f"Off-topic contamination ratio={ratio:.2f}")
             get_progress().think("next", "Re-search with arXiv + focused queries")
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("ignored error", exc_info=True)
         if iteration >= max_iter:
             state["needs_more_research"] = False
             state["abort_synthesis"] = True
@@ -265,7 +267,7 @@ Return JSON:
             get_progress().think("learned", reason[:160])
             get_progress().think("next", "Proceed to triangulation and synthesis")
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("ignored error", exc_info=True)
         return state
 
     result = call_llm(CRITIC_SYSTEM, prompt, model="fast")
@@ -394,7 +396,7 @@ Return JSON:
             sources_count=len(urls),
         )
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
     state["status"] = f"Evaluation: {'complete' if is_complete else 'needs more'}"
     return state

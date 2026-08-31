@@ -95,19 +95,87 @@ class KeyManager:
                 return None
             return t
 
-    def authorize(self, virtual_key: str, estimated_cost_usd: float = 0.0) -> Optional[Tenant]:
-        """BYOK auth + budget pre-check. Returns tenant if allowed, else None."""
+    def authorize(
+        self,
+        virtual_key: str,
+        estimated_cost_usd: float = 0.0,
+        estimated_tokens: int = 0,
+    ) -> Optional[Tenant]:
+        """BYOK auth + budget pre-check. Returns tenant if allowed, else None.
+
+        Enforces BOTH the USD budget and the daily token limit (with automatic
+        day rollover — ``tokens_today`` resets when the UTC day changes).
+        Pending reservations from in-flight requests are counted too.
+        """
         t = self.resolve_virtual_key(virtual_key)
         if t is None:
             return None
-        if t.spent_usd + estimated_cost_usd > t.budget_usd:
-            return None
+        with self._lock:
+            # Daily reset: UTC day rollover
+            today = time.strftime("%Y-%m-%d", time.gmtime())
+            if t.last_reset_day != today:
+                t.last_reset_day = today
+                t.tokens_today = 0
+            if t.spent_usd + t.pending_cost_usd + max(0.0, estimated_cost_usd) > t.budget_usd:
+                return None
+            if t.tokens_today + t.pending_tokens + max(0, estimated_tokens) > t.tokens_per_day:
+                return None  # daily token quota exhausted
         return t
 
-    def charge(self, tenant: Tenant, cost_usd: float, tokens: int) -> None:
+    # ---- atomic quota reservations --------------------------------------
+    def reserve_for(
+        self,
+        tenant: Tenant,
+        estimated_cost_usd: float = 0.0,
+        estimated_tokens: int = 0,
+    ) -> Optional["Reservation"]:
+        """Atomically reserve quota BEFORE a call (check + hold in one lock).
+
+        Prevents the TOCTOU race where N concurrent requests each pass
+        ``authorize()`` before any of them charges. On call success, pass the
+        reservation to ``charge()`` to swap the hold for actual usage; on
+        failure, ``release_reservation()`` returns the hold.
+        """
+        with self._lock:
+            today = time.strftime("%Y-%m-%d", time.gmtime())
+            if tenant.last_reset_day != today:
+                tenant.last_reset_day = today
+                tenant.tokens_today = 0
+            if tenant.spent_usd + tenant.pending_cost_usd + max(0.0, estimated_cost_usd) > tenant.budget_usd:
+                return None
+            if tenant.tokens_today + tenant.pending_tokens + max(0, estimated_tokens) > tenant.tokens_per_day:
+                return None
+            tenant.pending_cost_usd += max(0.0, estimated_cost_usd)
+            tenant.pending_tokens += max(0, estimated_tokens)
+            return Reservation(
+                tenant_id=tenant.tenant_id,
+                est_cost_usd=max(0.0, estimated_cost_usd),
+                est_tokens=max(0, estimated_tokens),
+            )
+
+    def release_reservation(self, reservation: "Reservation") -> None:
+        """Return a reservation's hold (call failed / was not charged)."""
+        with self._lock:
+            t = self._tenants.get(reservation.tenant_id)
+            if t is None:
+                return
+            t.pending_cost_usd = max(0.0, t.pending_cost_usd - reservation.est_cost_usd)
+            t.pending_tokens = max(0, t.pending_tokens - reservation.est_tokens)
+
+    def charge(
+        self,
+        tenant: Tenant,
+        cost_usd: float,
+        tokens: int,
+        reservation: Optional["Reservation"] = None,
+    ) -> None:
         with self._lock:
             tenant.spent_usd += cost_usd
             tenant.tokens_today += tokens
+            if reservation is not None:
+                # Swap the hold for actual usage
+                tenant.pending_cost_usd = max(0.0, tenant.pending_cost_usd - reservation.est_cost_usd)
+                tenant.pending_tokens = max(0, tenant.pending_tokens - reservation.est_tokens)
 
     def tenant(self, tenant_id: str) -> Optional[Tenant]:
         with self._lock:
@@ -145,8 +213,17 @@ class KeyManager:
             k.grace_until = None
 
     def usable_provider_keys(self, provider: str, now: Optional[float] = None) -> List[ProviderKey]:
-        """Return currently usable keys, rotating any that have passed TTL+grace."""
+        """Return currently usable keys, rotating any that have passed TTL+grace.
+
+        Concurrency: expiry/status classification happens under the lock; the
+        external ``rotate_callback`` is invoked OUTSIDE the lock (it may do
+        network I/O or take a different lock — calling it under our lock risks
+        deadlock). New key state is then applied atomically under a fresh lock
+        acquisition, guarded by the key's ``created_at`` so a concurrent
+        rotation cannot be clobbered.
+        """
         now = now or time.time()
+        to_rotate: List[ProviderKey] = []
         with self._lock:
             for k in list(self._provider_keys.get(provider, [])):
                 if k.status in ("disabled",):  # expired & no replacement
@@ -161,14 +238,42 @@ class KeyManager:
                     else:
                         k.status = "active"
             out = [k for k in self._provider_keys.get(provider, []) if k.status != "disabled"]
-        # lazily rotate keys that are past TTL and have a callback available
-        for k in out:
-            if k.status == "rotating" and k.provider in self._rotate_callbacks:
-                old_created = k.created_at
-                self._rotate(k)
-                if k.created_at == old_created:
-                    k.status = "rotating"
-        out = [k for k in out if k.status in ("active", "rotating")]
+            # Capture callbacks under the lock; invoke them outside it.
+            to_rotate = [
+                k for k in out
+                if k.status == "rotating" and k.provider in self._rotate_callbacks
+            ]
+
+        # Perform external rotation without holding the lock (deadlock-safe).
+        results: List[tuple[ProviderKey, str, float]] = []
+        for k in to_rotate:
+            old_created = k.created_at
+            try:
+                new_key = self._rotate_callbacks[k.provider](k.provider, k.key)
+            except Exception:
+                new_key = ""
+            results.append((k, new_key or "", old_created))
+
+        # Apply results atomically; skip if the key rotated concurrently.
+        with self._lock:
+            for k, new_key, old_created in results:
+                if k.created_at != old_created:
+                    continue  # another caller already rotated it
+                if new_key:
+                    k.key = new_key
+                    k.created_at = time.time()
+                    k.failures = 0
+                    k.status = "active"
+                    k.grace_until = None
+                elif now > k.created_at + (k.ttl_s or 0) + self._rotating_grace_s:
+                    k.status = "disabled"   # needs operator attention / external rotation
+                    k.grace_until = None
+                # else: keep "rotating" — grace window still open, retry later
+
+            out = [
+                k for k in self._provider_keys.get(provider, [])
+                if k.status in ("active", "rotating")
+            ]
         return out
 
 
@@ -205,6 +310,17 @@ class Tenant:
     spent_usd: float = 0.0
     tokens_today: int = 0
     enabled: bool = True
+    last_reset_day: str = ""  # UTC "YYYY-MM-DD" of last tokens_today reset
+    pending_cost_usd: float = 0.0  # held by in-flight reservations
+    pending_tokens: int = 0
+
+
+@dataclass
+class Reservation:
+    """A quota hold created by ``KeyManager.reserve_for``."""
+    tenant_id: str
+    est_cost_usd: float = 0.0
+    est_tokens: int = 0
 
 
 @dataclass

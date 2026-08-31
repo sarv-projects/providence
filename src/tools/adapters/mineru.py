@@ -9,6 +9,8 @@ Supports:
 
 from __future__ import annotations
 
+import logging
+
 import os
 import shutil
 import subprocess
@@ -73,7 +75,7 @@ def mineru_parse_pdf(file_or_url: str) -> Dict[str, str]:
                     pages_text.append(f"## Page {i+1}\n\n{txt}")
             extracted_text = "\n\n".join(pages_text)
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
         if not extracted_text:
             try:
@@ -82,7 +84,7 @@ def mineru_parse_pdf(file_or_url: str) -> Dict[str, str]:
                 pages_text = [f"## Page {i+1}\n\n{page.get_text()}" for i, page in enumerate(doc)]
                 extracted_text = "\n\n".join(pages_text)
             except Exception:
-                pass
+                logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
         title = os.path.basename(file_or_url)
         return {

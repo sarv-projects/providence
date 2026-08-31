@@ -16,6 +16,7 @@ Provides REST API endpoints for frontend, CLI, and integration tools:
 import time
 import os
 import json
+import logging
 import threading
 from typing import Dict, List, Optional
 from fastapi import FastAPI, HTTPException
@@ -24,10 +25,24 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import yaml
 
+_log = logging.getLogger("providence.web")
+
+
+def _http_error(status: int, exc: Exception, context: str) -> HTTPException:
+    """Convert an internal exception into a client-safe HTTP error.
+
+    Full details (message, traceback) are logged server-side; the client only
+    gets a generic message — raw exception strings previously leaked internal
+    paths, provider details, and config errors in ``detail``.
+    """
+    _log.exception("%s failed: %s", context, exc)
+    return HTTPException(status_code=status, detail=f"{context} failed — see server logs")
+
+
 from src.llm import call_llm, call_llm_stream, gateway_info, reset_gateway
 from src.graph import run_research, create_research_plan
 from src.memory import get_history as get_search_history
-from src.providers.catalog import load_catalog
+from src.providers.catalog import load_catalog, list_provider_presets
 from src.rag.chat_memory import get_chat_memory
 from src.rag.vault import Vault
 from src.gateway.metrics import DEFAULT_METRICS
@@ -56,6 +71,7 @@ class ChatRequest(BaseModel):
     mode: str = "fast"
     session_id: Optional[str] = "default"
     max_tokens: Optional[int] = None
+    model: Optional[str] = None
     stream: bool = False
     escalate: bool = True  # allow auto-escalation to research
 
@@ -79,6 +95,10 @@ class ResearchRequest(BaseModel):
     approved_plan: Optional[dict] = None
     clarifications: Optional[dict] = None  # question -> answer
     skip_clarify: bool = False
+    model: Optional[str] = None
+    max_cost_usd: Optional[float] = None
+    max_iterations: Optional[int] = None
+    max_tokens: Optional[int] = None
 
 
 class ResearchResponse(BaseModel):
@@ -109,6 +129,10 @@ class PlanUpdateRequest(BaseModel):
 class PlanRunRequest(BaseModel):
     background: bool = True
     clarifications: Optional[dict] = None
+    model: Optional[str] = None
+    max_cost_usd: Optional[float] = None
+    max_iterations: Optional[int] = None
+    max_tokens: Optional[int] = None
 
 
 class ClarifyRequest(BaseModel):
@@ -122,6 +146,13 @@ class ProviderRequest(BaseModel):
     api_key: Optional[str] = ""
     protocol: str = "openai_chat"
     models: List[str]
+
+
+class ProbeModelsRequest(BaseModel):
+    """Typed body for /api/models/probe (was an unvalidated dict)."""
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    zen_free: bool = False
 
 
 class ProviderResponse(BaseModel):
@@ -174,15 +205,9 @@ async def get_status():
 
 
 def _chat_should_escalate(text: str) -> bool:
-    t = text.lower().strip()
-    if len(t.split()) < 8:
-        return False
-    triggers = (
-        "research", "deep dive", "comprehensive", "compare ", " vs ",
-        "versus", "literature review", "survey of", "write a report",
-        "investigate", "analyze in depth", "pros and cons",
-    )
-    return any(x in t for x in triggers)
+    # Shared heuristic (single source of truth — also used by the CLI)
+    from src.engine.escalate import should_escalate_to_research
+    return should_escalate_to_research(text)
 
 
 def _build_chat_prompt(memory, system_prompt: str) -> str:
@@ -205,6 +230,8 @@ def _build_chat_prompt(memory, system_prompt: str) -> str:
 async def chat(request: ChatRequest):
     """Chat endpoint supporting multi-turn memory, streaming, and research escalation."""
     try:
+        defaults = _workspace_settings()
+        effective_model = request.model or defaults.get("default_model")
         session_id = request.session_id or "default"
         memory = get_chat_memory(session_id)
         memory.add("user", request.message)
@@ -218,7 +245,11 @@ async def chat(request: ChatRequest):
         if request.escalate and _chat_should_escalate(request.message):
             def _bg_research() -> None:
                 try:
-                    run_research(request.message, mode="standard", autonomy="L1")
+                    run_research(
+                        request.message, mode="standard", autonomy="L1",
+                        model=effective_model,
+                        max_tokens=request.max_tokens,
+                    )
                 except Exception as exc:
                     print(f"  [chat escalate] research failed: {exc}")
 
@@ -246,19 +277,28 @@ async def chat(request: ChatRequest):
             def event_gen():
                 full = []
                 try:
-                    for chunk in call_llm_stream(SYSTEM_PROMPT, user_prompt, model=tier):
+                    for chunk in call_llm_stream(
+                        SYSTEM_PROMPT, user_prompt, model=effective_model or tier,
+                        max_tokens=request.max_tokens,
+                    ):
                         full.append(chunk)
                         yield f"data: {json.dumps({'type': 'token', 'text': chunk})}\n\n"
                     text = "".join(full)
                     memory.add("assistant", text)
                     yield f"data: {json.dumps({'type': 'done', 'text': text})}\n\n"
                 except Exception as e:
-                    yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+                    # Sanitize: full details logged server-side, generic
+                    # message to the SSE client (previously raw str(e)).
+                    _log.exception("Streaming chat failed: %s", e)
+                    yield f"data: {json.dumps({'type': 'error', 'error': 'Chat streaming failed — see server logs'})}\n\n"
 
             return StreamingResponse(event_gen(), media_type="text/event-stream")
 
         before = _metrics_totals(DEFAULT_METRICS.snapshot())
-        response_text = call_llm(SYSTEM_PROMPT, user_prompt, model=tier, max_retries=3)
+        response_text = call_llm(
+            SYSTEM_PROMPT, user_prompt, model=effective_model or tier,
+            max_retries=3, max_tokens=request.max_tokens,
+        )
         after = _metrics_totals(DEFAULT_METRICS.snapshot())
 
         cost_delta = round(after["total_cost_usd"] - before["total_cost_usd"], 6)
@@ -277,7 +317,7 @@ async def chat(request: ChatRequest):
             escalated=False,
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _http_error(500, e, "Chat completion")
 
 
 # Research endpoint
@@ -292,6 +332,10 @@ async def research(request: ResearchRequest):
     start = time.time()
     try:
         autonomy = request.autonomy or "L1"
+        defaults = _workspace_settings()
+        effective_model = request.model or defaults.get("default_model")
+        effective_cost = request.max_cost_usd if request.max_cost_usd is not None else defaults.get("max_cost")
+        effective_iterations = request.max_iterations if request.max_iterations is not None else defaults.get("max_iterations")
 
         # Editable plan path (L1 optional via plan_first, L2 required)
         if request.plan_first or (
@@ -328,6 +372,10 @@ async def research(request: ResearchRequest):
                 plan_id=request.plan_id or "",
                 clarifications=request.clarifications,
                 skip_clarify=request.skip_clarify,
+                model=effective_model,
+                max_cost_usd=effective_cost,
+                max_iterations_override=effective_iterations,
+                max_tokens=request.max_tokens,
             )
             job_id = result.get("job_id", "")
             return {
@@ -351,6 +399,10 @@ async def research(request: ResearchRequest):
             plan_id=request.plan_id or "",
             clarifications=request.clarifications,
             skip_clarify=request.skip_clarify,
+            model=effective_model,
+            max_cost_usd=effective_cost,
+            max_iterations_override=effective_iterations,
+            max_tokens=request.max_tokens,
         )
         elapsed = time.time() - start
         after = _metrics_totals(DEFAULT_METRICS.snapshot())
@@ -386,7 +438,7 @@ async def research(request: ResearchRequest):
             duration_seconds=round(elapsed, 2),
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _http_error(500, e, "Research run")
 
 
 @app.post("/api/research/clarify")
@@ -407,7 +459,7 @@ async def create_plan(request: PlanCreateRequest):
             clarifications=request.clarifications,
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _http_error(500, e, "Clarification generation")
 
 
 @app.get("/api/research/plans")
@@ -456,6 +508,10 @@ async def run_plan(plan_id: str, request: PlanRunRequest = PlanRunRequest()):
     p = store.get(plan_id)
     if not p:
         raise HTTPException(status_code=404, detail=f"Plan not found: {plan_id}")
+    defaults = _workspace_settings()
+    effective_model = request.model or defaults.get("default_model")
+    effective_cost = request.max_cost_usd if request.max_cost_usd is not None else defaults.get("max_cost")
+    effective_iterations = request.max_iterations if request.max_iterations is not None else defaults.get("max_iterations")
 
     clarifications = request.clarifications or p.clarifications or None
     # If still needs clarification and L2, re-generate plan with answers
@@ -474,6 +530,11 @@ async def run_plan(plan_id: str, request: PlanRunRequest = PlanRunRequest()):
         "outline": p.outline,
         "search_queries": p.search_queries,
     }
+    # L2 plan review is represented by a paused job. Once the user approves,
+    # that placeholder must not remain alongside the real execution job.
+    if p.job_id:
+        from src.engine.jobs import get_jobs
+        get_jobs().cancel(p.job_id)
     store.update(plan_id, status="approved")
 
     result = run_research(
@@ -485,6 +546,10 @@ async def run_plan(plan_id: str, request: PlanRunRequest = PlanRunRequest()):
         plan_id=plan_id,
         clarifications=clarifications,
         skip_clarify=True,
+        model=effective_model,
+        max_cost_usd=effective_cost,
+        max_iterations_override=effective_iterations,
+        max_tokens=request.max_tokens,
     )
     job_id = result.get("job_id", "")
     if job_id:
@@ -501,6 +566,12 @@ async def run_plan(plan_id: str, request: PlanRunRequest = PlanRunRequest()):
 
 
 # List providers endpoint
+@app.get("/api/providers/presets")
+async def provider_presets():
+    """Provider directory used to start a BYOK connection."""
+    return {"providers": list_provider_presets()}
+
+
 @app.get("/api/providers", response_model=List[ProviderResponse])
 async def list_providers():
     """List all configured provider catalog slots."""
@@ -516,7 +587,7 @@ async def list_providers():
             ))
         return providers
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _http_error(500, e, "Listing providers")
 
 
 # Dynamic Provider Registration endpoint
@@ -559,7 +630,7 @@ async def add_provider(request: ProviderRequest):
             "models": request.models
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to register provider: {e}")
+        raise _http_error(500, e, "Provider registration")
 
 
 # History endpoint
@@ -569,7 +640,7 @@ async def get_history(limit: int = 20):
     try:
         return get_search_history(limit)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _http_error(500, e, "History lookup")
 
 
 # Vault search endpoint
@@ -586,8 +657,7 @@ async def search_vault(query: str, limit: int = 10):
             "limit": limit
         }
     except Exception as e:
-        # Fallback empty response if vault unavailable
-        return {"query": query, "results": [], "count": 0, "limit": limit, "warning": str(e)}
+        raise _http_error(503, e, "Vault search")
 
 
 # Pending Approvals Endpoint (Human-in-the-Loop)
@@ -598,7 +668,7 @@ async def list_approvals():
         approvals = get_pending_approvals()
         return {"approvals": approvals, "count": len(approvals)}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _http_error(500, e, "Listing approvals")
 
 
 @app.post("/api/approvals/{approval_id}/respond")
@@ -616,7 +686,7 @@ async def respond_approval(approval_id: str, request: ApprovalResponseRequest):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _http_error(500, e, "Approval response")
 
 
 # ── Settings persistence (workspace-level JSON) ─────────────────────
@@ -628,6 +698,16 @@ class SettingsModel(BaseModel):
     default_model: str = "opencode_free/nemotron-3-ultra-free"
 
 
+def _workspace_settings() -> dict:
+    """Read persisted defaults for API callers that omit per-request values."""
+    try:
+        with open(_settings_path(), "r") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
 def _settings_path() -> str:
     return os.path.join("data", "workspace_settings.json")
 
@@ -637,18 +717,16 @@ async def get_settings():
     """Load workspace research settings."""
     path = _settings_path()
     if os.path.exists(path):
-        try:
-            with open(path, "r") as f:
-                data = yaml.safe_load(f) or {}  # yaml handles JSON too poorly; use json
-        except Exception:
-            data = {}
-        # Prefer json
+        # Settings are written as JSON by save_settings below — parse JSON
+        # only (the previous yaml-then-json double parse misparsed unquoted
+        # scalars like `on`/`no` as booleans).
         try:
             import json
             with open(path, "r") as f:
                 data = json.load(f)
-        except Exception:
-            pass
+        except Exception as e:
+            _log.warning("Corrupt settings file %s: %s", path, e)
+            data = {}
         return data
     return SettingsModel().model_dump()
 
@@ -666,19 +744,34 @@ async def save_settings(settings: SettingsModel):
 
 
 @app.get("/api/research/progress")
-async def research_progress():
-    """Snapshot of current research progress (for polling UIs)."""
-    from src.engine.progress import get_progress
+async def research_progress(job_id: Optional[str] = None):
+    """Snapshot of research progress (for polling UIs).
+
+    ``job_id`` selects a specific run — runs are isolated per thread and
+    registered by job_id, so concurrent runs never clobber each other.
+    """
+    from src.engine.progress import get_progress, get_progress_by_job
+    if job_id:
+        p = get_progress_by_job(job_id)
+        if p:
+            return p.snapshot()
+        from src.engine.jobs import get_jobs
+        job = get_jobs().get(job_id)
+        if job:
+            return job.to_dict()
+        raise HTTPException(status_code=404, detail="Progress job not found")
     return get_progress().snapshot()
 
 
 @app.get("/api/research/progress/stream")
-async def research_progress_stream():
+async def research_progress_stream(job_id: Optional[str] = None):
     """SSE stream of research progress until finished."""
-    from src.engine.progress import get_progress
+    from src.engine.progress import get_progress, get_progress_by_job
+    progress = get_progress_by_job(job_id) if job_id else get_progress()
+    if job_id and progress is None:
+        raise HTTPException(status_code=404, detail="Progress stream not found")
 
     def event_gen():
-        progress = get_progress()
         last = ""
         while True:
             snap = progress.snapshot()
@@ -708,6 +801,19 @@ async def get_job(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
     return job.to_dict()
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+async def cancel_job(job_id: str):
+    """Cooperatively cancel a queued or running research job."""
+    from src.engine.jobs import get_jobs
+    registry = get_jobs()
+    if registry.cancel(job_id):
+        return {"status": "aborted", "job_id": job_id}
+    job = registry.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    raise HTTPException(status_code=409, detail="Job is already finished")
 
 
 @app.get("/api/reports")
@@ -777,6 +883,39 @@ async def list_modes():
     return {"modes": modes, "default": registry.default_mode}
 
 
+@app.get("/api/providers/catalog")
+async def provider_catalog(discover: bool = True):
+    """Canonical authenticated provider/model catalog for UI clients.
+
+    Providers requiring credentials are omitted until authenticated; the
+    keyless OpenCode free provider remains available. Model data comes from
+    the same discovery/filtering pipeline as the model picker.
+    """
+    from src.providers.models_catalog import list_catalog_models, group_for_picker
+    rows = list_catalog_models(discover_remote=discover)
+    groups = group_for_picker(rows)
+    # The catalog is free-only by construction (models_catalog filters paid
+    # models out). Drop providers with no usable models so paid-only
+    # providers such as OpenAI never surface in the picker UI.
+    providers = [
+        {
+            "id": group["provider"],
+            "name": group["provider_name"],
+            "base_url": group["base_url"],
+            "authenticated": bool(group["has_key"]),
+            "free": group["provider"] == "opencode_free",
+            "models": group["models"],
+        }
+        for group in groups
+        if group["models"]
+    ]
+    return {
+        "providers": providers,
+        "default_provider": "opencode_free",
+        "default_model": "nemotron-3-ultra-free",
+    }
+
+
 @app.get("/api/models")
 async def list_models(discover: bool = True, probe: bool = False, provider: Optional[str] = None):
     """
@@ -817,7 +956,7 @@ async def list_models(discover: bool = True, probe: bool = False, provider: Opti
 
 
 @app.post("/api/models/probe")
-async def probe_models_endpoint(body: dict):
+async def probe_models_endpoint(body: ProbeModelsRequest):
     """
     Probe specific models.
 
@@ -828,10 +967,10 @@ async def probe_models_endpoint(body: dict):
     """
     from src.providers.models_catalog import probe_model, probe_provider, probe_zen_free
 
-    if body.get("zen_free"):
+    if body.zen_free:
         return {"results": probe_zen_free()}
-    provider = body.get("provider")
-    model = body.get("model")
+    provider = body.provider
+    model = body.model
     if provider and model:
         return {"results": [probe_model(provider, model)]}
     if provider:

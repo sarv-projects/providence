@@ -1,7 +1,9 @@
 'use client'
 
 import { useState } from 'react'
-import { apiGet } from '@/lib/api'
+import { apiGet, safeHttpUrl } from '@/lib/api'
+import { AppShell } from '@/components'
+import { Search, ExternalLink } from 'lucide-react'
 
 interface VaultResult {
   url?: string
@@ -15,6 +17,7 @@ export default function VaultPage() {
   const [results, setResults] = useState<VaultResult[]>([])
   const [loading, setLoading] = useState(false)
   const [searched, setSearched] = useState(false)
+  const [error, setError] = useState('')
 
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault()
@@ -22,66 +25,36 @@ export default function VaultPage() {
 
     setLoading(true)
     setSearched(true)
+    setError('')
     try {
       const data = await apiGet<{ results?: VaultResult[] }>(
         `/api/vault/search?query=${encodeURIComponent(searchQuery)}&limit=10`
       )
       setResults(data.results || [])
     } catch (err) {
-      console.warn('Vault API unreachable:', err)
-      setResults([
-        {
-          title: 'Quantum Computing Research Notes',
-          url: 'https://example.com/quantum',
-          content: 'Quantum key distribution provides unconditional security using physics principles.'
-        }
-      ])
+      setResults([])
+      setError(err instanceof Error ? err.message : 'Vault search failed')
     } finally {
       setLoading(false)
     }
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 p-8 text-gray-900 dark:text-gray-100">
-      <div className="max-w-5xl mx-auto space-y-8">
-        <div className="flex justify-between items-center">
-          <div>
-            <h1 className="text-3xl font-bold">Research Vault Browser</h1>
-            <p className="text-sm text-gray-500 mt-1">Search persistent cross-run sources, extracted factoids, and findings cache</p>
-          </div>
-          <a href="/" className="px-4 py-2 bg-gray-700 text-white rounded hover:bg-gray-800 text-sm transition">
-            Back to App
-          </a>
-        </div>
-
-        {/* Search Bar */}
-        <form onSubmit={handleSearch} className="flex gap-4">
-          <input
-            type="text"
-            placeholder="Search vault sources by keyword or topic..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="flex-1 px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-          <button
-            type="submit"
-            disabled={loading}
-            className="px-6 py-3 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition disabled:opacity-50"
-          >
-            {loading ? 'Searching...' : 'Search Vault'}
-          </button>
-        </form>
+    <AppShell title="Research vault" description="Search persistent sources, factoids, and findings across runs.">
+      <div className="page-stack">
+        <form onSubmit={handleSearch} className="search-field search-field-large"><Search size={18} /><input type="text" placeholder="Search sources and findings" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} /><button type="submit" disabled={loading} className="primary-button">{loading ? 'Searching…' : 'Search'}</button></form>
 
         {/* Results List */}
         <div className="space-y-4">
+          {error && <div className="notice notice-error">{error}</div>}
           {results.map((r, i) => (
             <div key={i} className="bg-white dark:bg-gray-800 rounded-lg p-6 shadow border border-gray-200 dark:border-gray-700">
-              <h3 className="font-semibold text-lg text-blue-600 dark:text-blue-400 mb-1">
+              <h3 className="font-semibold text-lg text-gray-900 dark:text-gray-100 mb-1">
                 {r.title || r.url || `Vault Document ${i+1}`}
               </h3>
-              {r.url && (
-                <a href={r.url} target="_blank" rel="noreferrer" className="text-xs font-mono text-gray-400 hover:underline block mb-3">
-                  🔗 {r.url}
+              {safeHttpUrl(r.url) && (
+                <a href={safeHttpUrl(r.url) || undefined} target="_blank" rel="noopener noreferrer" className="text-xs font-mono text-gray-400 hover:underline block mb-3">
+                  <ExternalLink size={12} className="inline" /> {safeHttpUrl(r.url)}
                 </a>
               )}
               <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed">
@@ -98,6 +71,6 @@ export default function VaultPage() {
           </div>
         )}
       </div>
-    </div>
+    </AppShell>
   )
 }

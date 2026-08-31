@@ -10,6 +10,8 @@ Collections:
 
 from __future__ import annotations
 
+import logging
+
 import json
 import os
 from pathlib import Path
@@ -67,7 +69,7 @@ class LanceDBStore:
                     except Exception:
                         pass  # very old LanceDB — column just absent
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
     def upsert(self, chunks: list) -> None:
         """Insert or update chunks in the vector store.
@@ -118,7 +120,7 @@ class LanceDBStore:
             id_list = ", ".join(f"'{cid}'" for cid in chunk_ids)
             table.delete(f"id IN ({id_list})")
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("ignored error", exc_info=True)
         table.add(rows)
 
     def query(
@@ -147,8 +149,12 @@ class LanceDBStore:
                 if clauses:
                     try:
                         search = search.where(" AND ".join(clauses))
-                    except Exception:
-                        pass  # column missing / unsupported where — ignore filter
+                    except Exception as e:
+                        # Column missing / unsupported where — proceed without
+                        # the filter, but log it (previously silent).
+                        logging.getLogger(__name__).debug(
+                            "LanceDB filter dropped (clauses=%s): %s", clauses, e
+                        )
             results = search.to_list()
 
             # Remove vector from results to keep them light
@@ -179,7 +185,7 @@ class LanceDBStore:
         try:
             table.delete(f"run_id = '{run_id}'")
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
     def count(self) -> int:
         """Return total number of chunks stored."""

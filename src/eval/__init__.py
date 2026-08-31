@@ -68,7 +68,7 @@ class ComponentEvaluator:
             EvalSuite(name="Tool Selection", results=eval_tool_selection()),
             EvalSuite(name="Plan Coherence", results=eval_plan_coherence()),
             EvalSuite(name="Memory Recall", results=eval_memory_recall()),
-            EvalSuite(name="RAG Information Retrieval", results=eval_rag_ir()),
+            EvalSuite(name="RAG IR (smoke-only)", results=eval_rag_ir()),
             EvalSuite(name="Citation Grounding", results=eval_citation_grounding()),
             # Tier-2 #17: publishable, deterministic suites
             EvalSuite(name="DR3 Sandbox (deterministic)", results=eval_dr3_sandbox()),
@@ -105,9 +105,10 @@ def eval_tool_selection() -> List[EvalResult]:
     
     web_tools = registry.list_by_capability("web_search")
     extract_tools = registry.list_by_capability("extract")
-    
+
+    # Actual capability ratio — previously floored at 0.5, inflating the score.
     score = (len(web_tools) + len(extract_tools)) / max(1, len(tools) * 2)
-    score = min(1.0, max(0.5, score))
+    score = min(1.0, score)
     passed = len(tools) >= 2 and len(web_tools) >= 1
     
     return [
@@ -184,7 +185,13 @@ def eval_memory_recall() -> List[EvalResult]:
 
 
 def eval_rag_ir() -> List[EvalResult]:
-    """Evaluate RAG information retrieval performance (Recall@k & MRR)."""
+    """SMOKE TEST ONLY — not a retrieval-quality measure.
+
+    This merely checks that chunking + store + query do not crash and return
+    something; ``found_relevant`` is trivially true (``len(chunks) > 0``).
+    Real retrieval quality (Recall@k / MRR against expected doc IDs) lives in
+    the DR3 sandbox suite below. Kept as a startup sanity check only.
+    """
     start = time.time()
     sample_text = (
         "Transformer models use self-attention mechanisms to process sequential data in parallel. "
@@ -192,22 +199,27 @@ def eval_rag_ir() -> List[EvalResult]:
         "LanceDB is an open-source vector database for AI applications."
     )
     chunks = chunk_text(sample_text, chunk_size=100, chunk_overlap=10)
-    
+
     store = VectorStore(backend="fts")
     store.upsert(chunks)
-    
+
     query = "Transformer self attention"
     retrieved = store.query(text=query, k=3)
-    
+
     found_relevant = len(retrieved) > 0 or len(chunks) > 0
     score = 1.0 if found_relevant else 0.0
-    
+
     return [
         EvalResult(
-            name="rag_ir",
+            name="rag_ir_smoke",
             passed=found_relevant,
             score=score,
-            details={"chunks_indexed": len(chunks), "chunks_retrieved": len(retrieved)},
+            details={
+                "smoke_only": True,
+                "note": "not a quality measure — see DR3 sandbox suite for Recall@k/MRR",
+                "chunks_indexed": len(chunks),
+                "chunks_retrieved": len(retrieved),
+            },
             duration_seconds=round(time.time() - start, 3)
         )
     ]
@@ -272,62 +284,152 @@ def eval_citation_grounding() -> List[EvalResult]:
 # ── System Evaluator Implementations ───────────────────────────────
 
 def eval_task_completion() -> List[EvalResult]:
-    """Evaluate end-to-end task completion pipeline."""
+    """Evaluate end-to-end task completion pipeline.
+
+    A run counts as complete ONLY if the compiler actually shipped the report.
+    Previously any >100-char report string passed — including the
+    "# Research Report (BLOCKED)" text the compiler emits when the ship gate
+    FAILS, which let gate-failing runs score 100%.
+    """
     start = time.time()
     state = initial_state("Overview of Artificial Intelligence in Healthcare")
     state["findings"] = ["AI improves diagnostic accuracy.", "Machine learning accelerates drug discovery."]
+    # Realistic fixture: pages the run ACTUALLY fetched (fake example.com URLs
+    # are banned by the ship gate — a gate-failing fixture must fail this eval).
+    fetched_url = "https://arxiv.org/abs/2401.00001"
+    state["extracted_pages"] = [{
+        "url": fetched_url,
+        "title": "AI in Healthcare",
+        "content": (
+            "AI is transforming healthcare diagnostics and discovery. "
+            "Machine learning models improve diagnostic accuracy across clinical settings."
+        ),
+    }]
+    state["retrieved_chunks"] = [{
+        "url": fetched_url,
+        "title": "AI in Healthcare",
+        "text": "AI is transforming healthcare diagnostics and discovery.",
+        "id": "c1",
+        "score": 0.95,
+    }]
+    state["claims"] = [{
+        "text": "AI is transforming healthcare diagnostics and discovery",
+        "evidence_ids": [fetched_url],
+    }]
     state["sections"] = [
-        {"title": "Overview", "content": "AI is transforming healthcare diagnostics and discovery.", "sources": ["https://example.com/ai"]},
-        {"title": "Sources", "content": "[1] [Healthcare AI](https://example.com/ai)", "sources": ["https://example.com/ai"]},
+        {"title": "Overview", "content": "AI is transforming healthcare diagnostics and discovery.", "sources": [fetched_url]},
+        {"title": "Sources", "content": "[1] [AI in Healthcare](%s)" % fetched_url, "sources": [fetched_url]},
     ]
     compiled = compiler(state)
-    has_report = len(compiled.get("report", "")) > 100
-    
+    report = compiled.get("report", "")
+
+    # 1. Ship gate must not block the compiled state
+    from src.engine.agents.compiler import _validate_ship_gate
+    _, gate_issues = _validate_ship_gate(compiled)
+    gate_passed = not gate_issues
+    # 2. Report must exist and must not be the BLOCKED stub
+    has_report = len(report) > 100
+    not_blocked = not report.lstrip().lower().startswith("# research report (blocked")
+
+    passed = has_report and not_blocked and gate_passed
+    score = 1.0 if passed else (0.3 if has_report and not_blocked else 0.0)
+
     return [
         EvalResult(
             name="task_completion",
-            passed=has_report,
-            score=1.0 if has_report else 0.0,
-            details={"report_chars": len(compiled.get("report", ""))},
+            passed=passed,
+            score=score,
+            details={
+                "report_chars": len(report),
+                "ship_gate_passed": gate_passed,
+                "ship_gate_issues": gate_issues[:5],
+                "blocked_report": not not_blocked,
+            },
             duration_seconds=round(time.time() - start, 3)
         )
     ]
 
 
 def eval_trajectory() -> List[EvalResult]:
-    """Evaluate agent state trajectory transitions."""
+    """Evaluate the graph's actual routing decisions on sample states.
+
+    Previously compared two constants (2 <= 3) — trivially true. Now exercises
+    the real conditional-edge functions from the live graph.
+    """
     start = time.time()
-    state = initial_state("Trajectory Test Query")
-    state["iteration"] = 2
-    state["max_iterations"] = 3
-    state["needs_more_research"] = False
-    
-    valid_trajectory = state["iteration"] <= state["max_iterations"]
-    
+    from src.graph import should_continue_research, after_adjudicator
+
+    # needs_more_research → loop again
+    s_loop = initial_state("t")
+    s_loop["needs_more_research"] = True
+    s_loop["abort_synthesis"] = False
+    # sufficient evidence → adversary
+    s_done = initial_state("t")
+    s_done["needs_more_research"] = False
+    s_done["abort_synthesis"] = False
+    # abort → compile_abort
+    s_abort = initial_state("t")
+    s_abort["abort_synthesis"] = True
+    # socratic reopen → re-gather
+    s_soc = initial_state("t")
+    s_soc["socratic_reopen"] = True
+    s_soc["abort_synthesis"] = False
+    # no reopen → triangulate
+    s_tri = initial_state("t")
+    s_tri["socratic_reopen"] = False
+    s_tri["abort_synthesis"] = False
+
+    checks = {
+        "loop_again": should_continue_research(s_loop) == "research_again",
+        "proceed_to_adversary": should_continue_research(s_done) == "adversary",
+        "abort_routes_to_compile": should_continue_research(s_abort) == "compile_abort",
+        "socratic_hop_reopens": after_adjudicator(s_soc) == "socratic_again",
+        "clean_claim_route_triangulates": after_adjudicator(s_tri) == "triangulate",
+    }
+    passed_count = sum(1 for ok in checks.values() if ok)
+    passed = passed_count == len(checks)
+
     return [
         EvalResult(
             name="trajectory",
-            passed=valid_trajectory,
-            score=1.0 if valid_trajectory else 0.0,
-            details={"iteration": state["iteration"], "max_iterations": state["max_iterations"]},
+            passed=passed,
+            score=round(passed_count / len(checks), 2),
+            details={"route_checks": checks},
             duration_seconds=round(time.time() - start, 3)
         )
     ]
 
 
 def eval_efficiency() -> List[EvalResult]:
-    """Evaluate execution time and token consumption efficiency."""
+    """Measure real work: wall-clock of an index+query cycle and per-chunk
+    token cost. Previously ``passed=True`` was hardcoded."""
     start = time.time()
-    sample_corpus = ["Chunk 1 content for testing.", "Chunk 2 content for testing."]
+    sample_corpus = [
+        "Chunk 1 content for testing retrieval efficiency.",
+        "Chunk 2 content for testing retrieval efficiency.",
+        "Chunk 3 content for testing retrieval efficiency.",
+    ]
     total_tokens_est = sum(len(c.split()) * 1.3 for c in sample_corpus)
-    
-    score = 1.0 if total_tokens_est < 10000 else 0.5
-    
+
+    # Do the actual work being measured
+    store = VectorStore(backend="fts")
+    chunks = chunk_text(" ".join(sample_corpus), chunk_size=100, chunk_overlap=10)
+    store.upsert(chunks)
+    hits = store.query(text="retrieval efficiency", k=2)
+    elapsed = time.time() - start
+
+    # Pass criteria: retrieval actually returned something within a sane time
+    retrieved_ok = len(hits) > 0
+    time_ok = elapsed < 10.0
+    tokens_ok = total_tokens_est < 10000
+    passed = retrieved_ok and time_ok and tokens_ok
+    score = sum(1.0 for ok in (retrieved_ok, time_ok, tokens_ok) if ok) / 3.0
+
     return [
         EvalResult(
             name="efficiency",
-            passed=True,
-            score=score,
+            passed=passed,
+            score=round(score, 2),
             details={"estimated_tokens": int(total_tokens_est)},
             duration_seconds=round(time.time() - start, 3)
         )

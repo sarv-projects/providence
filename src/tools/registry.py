@@ -21,6 +21,8 @@ Performance upgrades:
 
 from __future__ import annotations
 
+import logging
+
 import os
 import threading
 import time
@@ -333,7 +335,7 @@ def _parallel_extract_with_tool(tool: Tool, urls: list[str], max_workers: int = 
             if out:
                 return out
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
     # Per-URL concurrent extraction (firecrawl, builtin, mineru, nougat, …).
     results: list[dict] = []

@@ -11,14 +11,16 @@ Ship gate (P0.3 / P0.4):
 
 from __future__ import annotations
 
+import logging
+
 import re
 import time
 
-from src.rag.guard import STOP_WORDS
 from src.state import ResearchState
 from src.export import save_markdown, save_html
 from src.render.math import render_mathjax_html, has_math, detect_math
 from src.urlutil import canonical_url
+from src.evidence import verify_claims
 from .registry import register
 
 # Banned placeholder / fake monograph patterns
@@ -50,18 +52,25 @@ def _is_fake_url(url: str) -> bool:
 def _collect_run_urls(state: ResearchState) -> list[tuple[str, str]]:
     """Collect (url, title) pairs from this run only.
 
-    P0.4 hardening: a URL counts as evidence only if it was ACTUALLY retrieved
-    during this run (retrieved_chunks / extracted_pages / search_results).
-    evidence_map keys that were never retrieved (LLM-fabricated IDs) are excluded.
-    URLs are canonicalized so html/abs/pdf variants of the same paper dedupe.
+    P0.5 hardening: a URL counts as evidence only if it was ACTUALLY fetched
+    and read during this run. Fetched evidence = run_corpus + retrieved_chunks
+    + extracted_pages + the explicit ``fetched_sources`` ledger the researcher
+    maintains (url / status / content hash / timestamp). Bare search-result
+    hits whose pages were never opened are NOT evidence and are excluded —
+    previously they were cited as if verified.
     """
     seen: set[str] = set()
     out: list[tuple[str, str]] = []
+    ledger = state.get("fetched_sources") or {}
 
     def _add(url: str, title: str) -> None:
         url = canonical_url(url)
         if not url or url in seen or _is_fake_url(url):
             return
+        if ledger:
+            meta = ledger.get(url)
+            if not isinstance(meta, dict) or meta.get("status") not in ("fetched", "success", "ok"):
+                return
         seen.add(url)
         out.append((url, (title or url).strip()))
 
@@ -72,9 +81,23 @@ def _collect_run_urls(state: ResearchState) -> list[tuple[str, str]]:
         _add(c.get("url"), c.get("title") or c.get("url"))
     for p in state.get("extracted_pages") or []:
         _add(p.get("url"), p.get("title") or p.get("url"))
+    # 1b. Explicit fetched-source ledger (researcher-recorded actual fetches:
+    #     status, content hash, fetched_at) — authoritative when present.
+    for url, meta in ledger.items():
+        if isinstance(meta, dict):
+            if meta.get("status") not in (None, "fetched", "success", "ok"):
+                continue
+            _add(url, meta.get("title") or url)
+        else:
+            _add(url, url)
+    # 2. Search hits count ONLY if the page was actually fetched above —
+    #    a URL that appeared in a search listing was never opened.
+    known = set(seen)
     for r in state.get("search_results") or []:
-        _add(r.get("url"), r.get("title") or r.get("url"))
-    # 2. evidence_map keys — only if they were actually retrieved above
+        u = canonical_url(r.get("url") or "")
+        if u and u in known:
+            _add(r.get("url"), r.get("title") or r.get("url"))
+    # 3. evidence_map keys — only if they were actually retrieved above
     known = set(seen)
     for url in (state.get("evidence_map") or {}):
         if canonical_url(url) in known:
@@ -218,67 +241,24 @@ def _is_sources_like(title: str) -> bool:
 
 
 def _claim_evidence_check(state: ResearchState) -> tuple[int, int, list[str]]:
-    """Stricter CoVe-lite: prefer adjudicated labels; else phrase/word match."""
-    # Prefer adjudicator results when present
-    adj = state.get("adjudicated_claims") or []
-    if adj:
-        supported = sum(1 for a in adj if a.get("status") == "supported")
-        total = len(adj)
-        unsupported = [
-            (a.get("text") or "")[:80]
-            for a in adj
-            if a.get("status") in ("contested", "synthetic")
-        ][:5]
-        return supported, total, unsupported
+    """Apply the canonical verifier used by the adversary stage.
 
-    claims = state.get("claims") or []
-    if not claims:
-        return 0, 0, []
-    corpus = " ".join(
-        (c.get("text") or "") for c in (state.get("run_corpus") or [])
-    ).lower()
-    corpus += " " + " ".join(
-        (c.get("text") or "") for c in (state.get("retrieved_chunks") or [])
-    ).lower()
-    corpus += " " + " ".join(
-        (p.get("content") or "")[:2000]
-        for p in (state.get("extracted_pages") or [])[:20]
-    ).lower()
-
-    supported = 0
-    unsupported: list[str] = []
-    run_urls = {u for u, _ in _collect_run_urls(state)}
-    for c in claims:
-        text = (c.get("text") or "").strip()
-        if not text:
-            continue
-        words = re.findall(r"[a-zA-Z]{4,}", text.lower())
-        eids = c.get("evidence_ids") or []
-        # Canonicalize so html/pdf/abs variants match run_urls (P0.4)
-        eid_hit = any(canonical_url(e) in run_urls for e in eids)
-        if len(words) < 4:
-            if eid_hit:
-                supported += 1
-            else:
-                unsupported.append(text[:80])
-            continue
-        # 3-gram phrase hit (stopword-heavy trigrams excluded) OR strong unigram overlap
-        phrases = []
-        for i in range(min(6, max(0, len(words) - 2))):
-            ph = words[i : i + 3]
-            if sum(1 for w in ph if w in STOP_WORDS) >= 2:
-                continue
-            phrases.append(" ".join(ph))
-        phrase_hit = any(ph in corpus for ph in phrases)
-        hits = sum(1 for w in words[:12] if w in corpus)
-        if phrase_hit or hits >= max(3, len(words[:12]) // 2):
-            supported += 1
-        elif eids and eid_hit:
-            supported += 1  # URL-linked soft support
-        else:
-            unsupported.append(text[:80])
-    total = len([c for c in claims if (c.get("text") or "").strip()])
-    return supported, total, unsupported[:5]
+    This deliberately re-verifies adjudicated output instead of trusting a
+    prior label.  It prevents stale or hand-built adjudication rows from
+    bypassing the final ship gate.
+    """
+    result = verify_claims(state)
+    rows = result["claims"]
+    state["verified_spans"] = result["spans"]
+    state["evidence_graph"] = result["graph"]
+    state["adjudicated_claims"] = rows
+    supported = sum(1 for row in rows if row.get("status") == "supported")
+    unsupported = [
+        (row.get("text") or "")[:80]
+        for row in rows
+        if row.get("status") != "supported"
+    ][:5]
+    return supported, len(rows), unsupported
 
 
 def _build_bedrock_section(state: ResearchState) -> dict:
@@ -295,7 +275,13 @@ def _build_bedrock_section(state: ResearchState) -> dict:
             sc = a.get("score", "")
             eids = a.get("evidence_ids") or []
             eid = eids[0] if eids else ""
-            flag = {"supported": "✅", "contested": "⚠️", "synthetic": "🧪"}.get(st, "•")
+            flag = {
+                "supported": "✅",
+                "contradicted": "❌",
+                "contested": "⚠️",
+                "synthetic": "🧪",
+                "uncertain": "⚠️",
+            }.get(st, "•")
             lines.append(f"{flag} **[{i}] ({st}** score={sc}) {a.get('text', '')}")
             if eid and not _is_fake_url(str(eid)):
                 lines.append(f"   - evidence: {eid}")
@@ -645,5 +631,5 @@ def compiler(state: ResearchState) -> ResearchState:
             markdown_path=md_path,
         )
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("ignored error", exc_info=True)
     return state

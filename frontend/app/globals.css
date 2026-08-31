@@ -2,22 +2,389 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
+:root,
+:root.light {
   --background: #ffffff;
   --foreground: #171717;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+:root.dark {
+  --background: #0a0a0a;
+  --foreground: #ededed;
 }
 
 body {
   color: var(--foreground);
   background: var(--background);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+@layer components {
+  .composer-wrap {
+    @apply border-t border-gray-200 dark:border-gray-800 bg-white/95 dark:bg-gray-950/95 px-4 pt-3 pb-4 backdrop-blur;
+  }
+
+  .composer {
+    @apply rounded-2xl border border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 shadow-sm focus-within:border-gray-500 dark:focus-within:border-gray-400;
+  }
+
+  .composer-input {
+    @apply block w-full resize-none bg-transparent px-4 pt-3 text-sm outline-none placeholder:text-gray-500 dark:placeholder:text-gray-400;
+  }
+
+  .composer-toolbar {
+    @apply flex items-center justify-between gap-2 px-3 pb-2 pt-2;
+  }
+
+  .toolbar-left {
+    @apply flex min-w-0 flex-wrap items-center gap-1;
+  }
+
+  .toolbar-select {
+    @apply relative inline-flex items-center rounded-lg px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-200 dark:text-gray-200 dark:hover:bg-gray-800;
+  }
+
+  .toolbar-select select {
+    @apply appearance-none cursor-pointer bg-transparent pr-4 outline-none;
+  }
+
+  .toolbar-select svg {
+    @apply pointer-events-none absolute right-1;
+  }
+
+  .subtle-select {
+    @apply text-gray-500 dark:text-gray-400;
+  }
+
+  .plan-toggle {
+    @apply inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-gray-500;
+  }
+
+  .model-menu {
+    @apply inline-block;
+  }
+
+  .model-menu-trigger {
+    @apply flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-medium text-gray-700 transition hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50 dark:text-gray-200 dark:hover:bg-gray-800;
+  }
+
+  .model-menu-current {
+    @apply max-w-36 truncate;
+  }
+
+  .model-menu-provider {
+    @apply hidden text-[10px] text-gray-400 sm:inline;
+  }
+
+  .model-menu-chevron {
+    @apply text-gray-400;
+  }
+
+  .model-menu-popover {
+    @apply absolute bottom-full left-0 z-50 mb-2 w-72 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-xl dark:border-gray-700 dark:bg-gray-900;
+  }
+
+  .model-menu-search {
+    @apply flex items-center gap-2 border-b border-gray-200 px-3 py-2 text-gray-400 dark:border-gray-700;
+  }
+
+  .model-menu-search input {
+    @apply min-w-0 flex-1 bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400 dark:text-gray-100;
+  }
+
+  .model-menu-list {
+    @apply max-h-72 overflow-y-auto p-1.5;
+  }
+
+  .model-menu-group-header {
+    @apply flex items-center gap-2 px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-gray-400;
+  }
+
+  .model-free-badge {
+    @apply rounded bg-green-100 px-1 py-px text-[9px] font-bold normal-case tracking-normal text-green-700 dark:bg-green-900/40 dark:text-green-300;
+  }
+
+  .model-menu-item {
+    @apply flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-800;
+  }
+
+  .model-menu-item-label {
+    @apply min-w-0 flex-1 truncate font-medium text-gray-900 dark:text-gray-100;
+  }
+
+  .model-menu-item-sub {
+    @apply truncate text-[11px] text-gray-400;
+  }
+
+  .model-menu-check {
+    @apply shrink-0 text-green-600;
+  }
+
+  .model-menu-empty {
+    @apply px-2 py-4 text-center text-xs text-gray-400;
+  }
+
+  .plan-toggle input {
+    @apply accent-blue-600;
+  }
+
+  .send-button {
+    @apply flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gray-900 text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:bg-gray-300 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200 dark:disabled:bg-gray-700;
+  }
+
+  .composer-hint {
+    @apply mx-auto mt-2 max-w-4xl text-center text-[11px] text-gray-400;
+  }
+
+  .app-shell {
+    @apply flex min-h-screen bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100;
+  }
+
+  .app-nav {
+    @apply sticky top-0 flex h-screen w-60 shrink-0 flex-col border-r border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900;
+  }
+
+  .app-brand {
+    @apply mb-8 flex items-center gap-2 px-2 text-sm;
+  }
+
+  .brand-mark {
+    @apply flex h-7 w-7 items-center justify-center rounded-lg bg-gray-900 text-white dark:bg-white dark:text-gray-900;
+  }
+
+  .app-nav nav {
+    @apply space-y-1;
+  }
+
+  .app-nav nav a {
+    @apply flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-gray-600 transition hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white;
+  }
+
+  .theme-button {
+    @apply mt-auto flex items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800;
+  }
+
+  .app-main {
+    @apply min-w-0 flex-1 px-4 py-8 sm:px-8;
+  }
+
+  .page-header {
+    @apply mx-auto mb-8 flex max-w-5xl items-start justify-between gap-4;
+  }
+
+  .page-header h1 {
+    @apply text-3xl font-semibold tracking-tight;
+  }
+
+  .page-header > div > p:last-child {
+    @apply mt-1 text-sm text-gray-500 dark:text-gray-400;
+  }
+
+  .page-stack {
+    @apply mx-auto max-w-5xl space-y-6;
+  }
+
+  .search-field {
+    @apply flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-gray-400 shadow-sm dark:border-gray-800 dark:bg-gray-900;
+  }
+
+  .search-field input {
+    @apply min-w-0 flex-1 bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400 dark:text-gray-100;
+  }
+
+  .search-field-large {
+    @apply p-2;
+  }
+
+  .search-field-large .primary-button {
+    @apply shrink-0;
+  }
+
+  .notice {
+    @apply rounded-lg border p-3 text-sm;
+  }
+
+  .notice-error {
+    @apply border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300;
+  }
+
+  .empty-state {
+    @apply flex min-h-32 flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-gray-300 px-4 text-center text-sm text-gray-400 dark:border-gray-700;
+  }
+
+  .empty-state svg {
+    @apply mb-1 text-gray-300 dark:text-gray-600;
+  }
+
+  .settings-page {
+    @apply min-h-screen bg-gray-50 px-4 py-8 text-gray-900 dark:bg-gray-950 dark:text-gray-100 sm:px-8;
+  }
+
+  .settings-content {
+    @apply mx-auto max-w-3xl space-y-6;
+  }
+
+  .settings-heading {
+    @apply flex items-start justify-between gap-4;
+  }
+
+  .settings-heading h1 {
+    @apply text-3xl font-semibold tracking-tight;
+  }
+
+  .settings-heading p:not(.eyebrow) {
+    @apply mt-1 text-sm text-gray-500 dark:text-gray-400;
+  }
+
+  .eyebrow {
+    @apply mb-1 text-[11px] font-semibold uppercase tracking-widest text-gray-400;
+  }
+
+  .settings-section, .settings-panel {
+    @apply rounded-xl border border-gray-200 bg-white shadow-sm dark:border-gray-800 dark:bg-gray-900;
+  }
+
+  .settings-section {
+    @apply space-y-5 p-5 sm:p-6;
+  }
+
+  .section-title {
+    @apply flex items-start gap-3;
+  }
+
+  .section-title svg {
+    @apply mt-0.5 text-gray-500;
+  }
+
+  .section-title h2 {
+    @apply text-base font-semibold;
+  }
+
+  .section-title p, .settings-panel-header small {
+    @apply mt-1 block text-xs text-gray-500 dark:text-gray-400;
+  }
+
+  .settings-grid {
+    @apply grid grid-cols-1 gap-4 sm:grid-cols-2;
+  }
+
+  .settings-grid label, .wide-field {
+    @apply text-xs font-medium text-gray-600 dark:text-gray-300;
+  }
+
+  .settings-grid select, .settings-grid input, .wide-field input, .provider-form input {
+    @apply mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-gray-500 dark:border-gray-700 dark:bg-gray-950;
+  }
+
+  .wide-field {
+    @apply block;
+  }
+
+  .wide-field small {
+    @apply mt-1 block text-[11px] font-normal text-gray-400;
+  }
+
+  .settings-panel-header {
+    @apply flex w-full items-center justify-between p-5 text-left sm:p-6;
+  }
+
+  .settings-panel-header small {
+    @apply font-normal;
+  }
+
+  .settings-icon {
+    @apply flex h-8 w-8 items-center justify-center rounded-lg bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300;
+  }
+
+  .settings-panel-body {
+    @apply border-t border-gray-200 p-5 dark:border-gray-800 sm:p-6;
+  }
+
+  .provider-row {
+    @apply relative flex flex-col gap-2 rounded-lg border border-gray-200 p-3 pr-7 dark:border-gray-800 sm:flex-row sm:items-center sm:justify-between;
+  }
+
+  .provider-row strong, .provider-row small {
+    @apply block;
+  }
+
+  .provider-row small {
+    @apply mt-0.5 truncate text-[11px] text-gray-400;
+  }
+
+  .model-chip {
+    @apply rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[10px] text-gray-600 dark:bg-gray-800 dark:text-gray-300;
+  }
+
+  .status-dot {
+    @apply absolute right-3 top-4 h-2 w-2 rounded-full bg-gray-300 dark:bg-gray-700;
+  }
+
+  .status-dot.active {
+    @apply bg-emerald-500;
+  }
+
+  .primary-button, .secondary-button {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .primary-button {
+    @apply bg-gray-900 text-white hover:bg-gray-700 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200;
+  }
+
+  .secondary-button {
+    @apply border border-gray-300 text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800;
+  }
+
+  .provider-form {
+    @apply grid grid-cols-1 gap-2 rounded-lg bg-gray-50 p-3 dark:bg-gray-950 sm:grid-cols-2;
+  }
+
+  .provider-form .primary-button {
+    @apply sm:col-span-2;
+  }
+
+  .mobile-menu-button, .mobile-backdrop {
+    @apply hidden;
+  }
+
+  @media (max-width: 767px) {
+    .app-nav {
+      @apply fixed inset-y-0 left-0 z-50 -translate-x-full transition-transform;
+    }
+
+    .app-nav.mobile-open {
+      @apply translate-x-0;
+    }
+
+    .app-main {
+      @apply w-full px-4 pt-16;
+    }
+
+    .page-header {
+      @apply flex-col;
+    }
+
+    .page-header .primary-button {
+      @apply w-full;
+    }
+
+    .mobile-menu-button {
+      @apply fixed left-3 top-3 z-50 flex h-9 w-9 items-center justify-center rounded-lg border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900;
+    }
+
+    .mobile-backdrop {
+      @apply fixed inset-0 z-40 block bg-black/30;
+    }
+
+    .sidebar {
+      @apply fixed inset-y-0 left-0 z-50 -translate-x-full transition-transform;
+    }
+
+    .sidebar.mobile-open {
+      @apply translate-x-0;
+    }
+  }
 }
 
 @layer utilities {

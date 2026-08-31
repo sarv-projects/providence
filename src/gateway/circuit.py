@@ -19,6 +19,8 @@ application bugs, not unhealthy-endpoint signals -- those must not open it).
 
 from __future__ import annotations
 
+import logging
+
 import threading
 import time
 from typing import Callable, Dict, Optional
@@ -71,10 +73,15 @@ class CircuitBreaker:
         """Report a successful call on this route."""
         with self._lock:
             self._failures = 0
-            if self._state in (HALF_OPEN, OPEN):
-                self._transition(CLOSED)
+            # Decrement the half-open probe counter BEFORE any state
+            # transition — _transition(CLOSED) makes the HALF_OPEN branch
+            # unreachable afterwards (previously a dead-code bug that leaked
+            # probe slots).
             if self._state == HALF_OPEN:
                 self._half_open_inflight = max(0, self._half_open_inflight - 1)
+                self._transition(CLOSED)
+            elif self._state == OPEN:
+                self._transition(CLOSED)
 
     def on_failure(self, retriable: bool) -> None:
         """Report a failure. Only retriable failures should trip the breaker."""
@@ -107,7 +114,7 @@ class CircuitBreaker:
             try:
                 self._on_state_change(self.name, new_state)
             except Exception:
-                pass
+                logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
     @property
     def state(self) -> str:

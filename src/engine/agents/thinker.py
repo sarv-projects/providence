@@ -12,6 +12,8 @@ Nodes:
 
 from __future__ import annotations
 
+import logging
+
 import json
 import os
 import threading
@@ -157,7 +159,7 @@ def _web_scout_snippets(query: str, k: int = 5) -> list[dict]:
                     "snippet": (r.get("content") or "")[:400],
                 })
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("ignored error", exc_info=True)
     return hits
 
 
@@ -180,7 +182,7 @@ def thinker_query_scout(state: ResearchState) -> ResearchState:
         get_progress().update(stage="scouting", status=state["status"])
         get_progress().think("next", "Scout query with web + parallel Gemini")
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
     hits = _web_scout_snippets(query, k=5)
     scout_blob = "\n".join(
@@ -305,7 +307,7 @@ def thinker_query_scout(state: ResearchState) -> ResearchState:
         get_progress().think("next", f"Plan with {len(state['search_queries'])} seeded queries")
         get_progress().update(plan=state.get("plan") or {})
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
     state["status"] = (
         f"Scout done: {len(hits)} web hits, "
@@ -358,7 +360,7 @@ def thinker_plan_refine(state: ResearchState) -> ResearchState:
         from src.engine.progress import get_progress
         get_progress().think("next", "Thinker refining research plan")
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
     analysis = _invoke_thinker(_build_plan_pack(state), "plan refinement for deep research")
     if "error" not in analysis:
@@ -379,7 +381,7 @@ def thinker_plan_refine(state: ResearchState) -> ResearchState:
             get_progress().think("learned", f"Plan refined to {len(state.get('outline', []))} sections")
             get_progress().update(plan=state.get("plan") or {})
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("ignored error", exc_info=True)
     return state
 
 
@@ -397,7 +399,7 @@ def thinker_contradiction_check(state: ResearchState) -> ResearchState:
         from src.engine.progress import get_progress
         get_progress().think("next", "Thinker checking contradictions across sources")
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
     analysis = _invoke_thinker(
         _build_contradiction_pack(state),
@@ -427,7 +429,7 @@ def thinker_contradiction_check(state: ResearchState) -> ResearchState:
                         c.get("description", str(c))[:200] if isinstance(c, dict) else str(c)[:200],
                     )
             except Exception:
-                pass
+                logging.getLogger(__name__).debug("ignored error", exc_info=True)
         follow = analysis.get("follow_up_queries")
         if isinstance(follow, list) and state.get("needs_more_research"):
             state["search_queries"] = [str(q) for q in follow[:6] if q]
@@ -549,7 +551,7 @@ def thinker_search_strategy(state: ResearchState) -> ResearchState:
         if analysis.get("rationale"):
             p.think("next", str(analysis["rationale"])[:200])
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
     # Optional replan outline
     if state.get("replan") and isinstance(analysis, dict) and analysis.get("refined_outline"):

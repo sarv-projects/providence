@@ -9,8 +9,12 @@ Manages conversation context for chat mode:
 
 from __future__ import annotations
 
+import logging
+
 import json
+import logging
 import os
+import threading
 import time
 from typing import Optional, Dict
 
@@ -36,6 +40,9 @@ class ChatMemory:
         self.max_summary_length = max_summary_length
         self.messages: list[dict] = []  # [{role, content, timestamp}]
         self.summary: str = ""
+        # Per-instance lock: concurrent requests on the same session
+        # previously raced on self.messages and corrupted the JSON file.
+        self._lock = threading.RLock()
 
         if not persist_path:
             safe_session = "".join(c if c.isalnum() else "_" for c in session_id)
@@ -48,13 +55,14 @@ class ChatMemory:
 
     def add(self, role: str, content: str) -> None:
         """Add a message to the conversation."""
-        self.messages.append({
-            "role": role,
-            "content": content,
-            "timestamp": time.time(),
-        })
-        self._maybe_compress()
-        self._save()
+        with self._lock:
+            self.messages.append({
+                "role": role,
+                "content": content,
+                "timestamp": time.time(),
+            })
+            self._maybe_compress()
+            self._save()
 
     def _maybe_compress(self) -> None:
         """If window is full, compress oldest messages into summary."""
@@ -94,7 +102,7 @@ class ChatMemory:
             if summary and len(summary.strip()) > 10:
                 return f"[summary: {summary.strip()[: self.max_summary_length]}]"
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
         sentences = [s.strip() for s in text.replace("\n", ". ").split(".") if s.strip()]
         key_indicators = ["?", "important", "key", "main", "note", "result"]
@@ -127,18 +135,21 @@ class ChatMemory:
 
     def clear(self) -> None:
         """Clear all memory."""
-        self.messages = []
-        self.summary = ""
-        self._save()
+        with self._lock:
+            self.messages = []
+            self.summary = ""
+            self._save()
 
     def _save(self) -> None:
-        """Persist to disk."""
+        """Persist to disk (atomic write — caller holds the lock)."""
         os.makedirs(os.path.dirname(self.persist_path), exist_ok=True)
-        with open(self.persist_path, "w") as f:
+        tmp = self.persist_path + f".tmp.{os.getpid()}.{threading.get_ident()}"
+        with open(tmp, "w") as f:
             json.dump({
                 "messages": self.messages[-50:],
                 "summary": self.summary,
             }, f, indent=2)
+        os.replace(tmp, self.persist_path)
 
     def _load(self) -> None:
         """Load from disk if exists."""
@@ -150,7 +161,15 @@ class ChatMemory:
                 self.messages = data.get("messages", [])[-self.window_size:]
                 self.summary = data.get("summary", "")
         except (json.JSONDecodeError, FileNotFoundError):
-            pass
+            # Back up the corrupt file instead of silently overwriting it.
+            try:
+                backup = self.persist_path + f".corrupt.{int(time.time())}"
+                os.replace(self.persist_path, backup)
+                logging.getLogger(__name__).debug(
+                    "corrupt chat memory backed up to %s", backup
+                )
+            except OSError:
+                pass
 
     def __len__(self) -> int:
         return len(self.messages)
@@ -158,19 +177,25 @@ class ChatMemory:
 
 # Module-level registry for chat memories by session_id
 _chat_memories: Dict[str, ChatMemory] = {}
+_chat_memories_lock = threading.RLock()
+_CHAT_MEMORY_MAX = 200  # bound the session registry
 
 
 def get_chat_memory(session_id: str = "default") -> ChatMemory:
     """Get or create the session chat memory."""
-    global _chat_memories
-    if session_id not in _chat_memories:
-        _chat_memories[session_id] = ChatMemory(session_id=session_id)
-    return _chat_memories[session_id]
+    with _chat_memories_lock:
+        mem = _chat_memories.get(session_id)
+        if mem is None:
+            if len(_chat_memories) >= _CHAT_MEMORY_MAX:
+                _chat_memories.pop(next(iter(_chat_memories)), None)
+            mem = ChatMemory(session_id=session_id)
+            _chat_memories[session_id] = mem
+        return mem
 
 
 def reset_chat_memory(session_id: str = "default") -> None:
     """Reset a chat memory session."""
-    global _chat_memories
-    if session_id in _chat_memories:
-        _chat_memories[session_id].clear()
-        del _chat_memories[session_id]
+    with _chat_memories_lock:
+        if session_id in _chat_memories:
+            _chat_memories[session_id].clear()
+            del _chat_memories[session_id]

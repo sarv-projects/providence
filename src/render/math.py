@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import html
 import re
+import secrets
 from typing import Tuple
 
 
@@ -231,27 +232,41 @@ def wrap_html_page(
     """
     mathjax_script = ""
     if include_mathjax:
-        mathjax_script = """
-    <script id="MathJax-script" async
+        # Nonce-based CSP: the two MathJax scripts are the only scripts allowed
+        # to run on this page — anything injected through report content is
+        # blocked by both escaping (above) and the CSP meta tag.
+        nonce = secrets.token_urlsafe(16)
+        mathjax_script = f"""
+    <script id="MathJax-script" async nonce="{nonce}"
         src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js">
     </script>
-    <script>
-        MathJax = {
-            tex: {
+    <script nonce="{nonce}">
+        MathJax = {{
+            tex: {{
                 inlineMath: [['$', '$']],
                 displayMath: [['$$', '$$']],
                 processEscapes: true,
-            },
-            options: {
+            }},
+            options: {{
                 ignoreHtmlClass: 'no-mathjax',
-            }
-        };
+            }}
+        }};
     </script>"""
+    else:
+        nonce = secrets.token_urlsafe(16)
+    csp = (
+        f"default-src 'none'; "
+        f"script-src 'nonce-{nonce}' https://cdn.jsdelivr.net; "
+        f"style-src 'unsafe-inline'; "
+        f"img-src https: data:; font-src https://cdn.jsdelivr.net; "
+        f"connect-src 'none'; base-uri 'none'; form-action 'none'"
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="utf-8"/>
+    <meta http-equiv="Content-Security-Policy" content="{csp}"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>{html.escape(title)}</title>
     {mathjax_script}
@@ -310,6 +325,24 @@ def wrap_html_page(
 </html>"""
 
 
+_SAFE_HREF_RE = re.compile(r"^https?://", re.I)
+
+
+def _safe_href(url: str) -> str:
+    """Return a link target that cannot execute script.
+
+    Only http/https URLs are allowed; anything else (javascript:, data:,
+    vbscript:, file:, relative XSS tricks) is reduced to an inert '#'.
+    """
+    url = (url or "").strip()
+    # Normalize scheme-detection: strip control chars / whitespace that
+    # browsers may ignore (e.g. "java\tscript:").
+    probe = re.sub(r"[\s\x00-\x1f]", "", url).lower()
+    if _SAFE_HREF_RE.match(probe):
+        return url
+    return "#"
+
+
 def markdown_to_html(md_text: str, title: str = "Research Report") -> str:
     """Convert markdown with math to full HTML page.
 
@@ -340,18 +373,19 @@ def markdown_to_html(md_text: str, title: str = "Research Report") -> str:
             html_lines.append(html.escape(line))
             continue
 
-        # Block math — wrap in div for centering
+        # Block math — wrap in div for centering.
+        # XSS: math text originates from web content / LLM output — escape it.
         if stripped.startswith("$$") and stripped.endswith("$$"):
-            html_lines.append(f'<div class="math-block">{stripped}</div>')
+            html_lines.append(f'<div class="math-block">{html.escape(stripped)}</div>')
             continue
 
-        # Headings
+        # Headings — escaped: heading text comes from untrusted sources
         if stripped.startswith("# "):
-            html_lines.append(f"<h1>{stripped[2:]}</h1>")
+            html_lines.append(f"<h1>{html.escape(stripped[2:])}</h1>")
         elif stripped.startswith("## "):
-            html_lines.append(f"<h2>{stripped[3:]}</h2>")
+            html_lines.append(f"<h2>{html.escape(stripped[3:])}</h2>")
         elif stripped.startswith("### "):
-            html_lines.append(f"<h3>{stripped[4:]}</h3>")
+            html_lines.append(f"<h3>{html.escape(stripped[4:])}</h3>")
         # Links
         elif re.match(r"^\[(\d+)\]\s+(.+)", stripped):
             # Citation-style: [1] https://...
@@ -359,13 +393,14 @@ def markdown_to_html(md_text: str, title: str = "Research Report") -> str:
         elif re.match(r"^\[(.+)\]\((.+)\)$", stripped):
             match = re.match(r"^\[(.+)\]\((.+)\)$", stripped)
             if match:
-                html_lines.append(f'<p><a href="{match.group(2)}">{html.escape(match.group(1))}</a></p>')
+                href = _safe_href(match.group(2))
+                html_lines.append(f'<p><a href="{html.escape(href, quote=True)}">{html.escape(match.group(1))}</a></p>')
         # Empty line
         elif not stripped:
             html_lines.append("")
-        # Regular paragraph
+        # Regular paragraph — escaped: content is untrusted
         else:
-            html_lines.append(f"<p>{stripped}</p>")
+            html_lines.append(f"<p>{html.escape(stripped)}</p>")
 
     body_html = "\n".join(html_lines)
     return wrap_html_page(body_html, title=title)

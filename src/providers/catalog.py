@@ -219,6 +219,31 @@ def _ensure_fallback(cat: CatalogConfig) -> None:
         ])
 
 
+def list_provider_presets(config_path: Optional[str] = None) -> list[dict]:
+    """Return provider definitions for the BYOK connection picker.
+
+    Presets are metadata only; they are never treated as connected until a
+    credential is present. This mirrors provider pickers that separate the
+    provider directory from authenticated provider instances.
+    """
+    raw = _load_raw(Path(config_path) if config_path else _resolve_config_path())
+    result = []
+    for key, cfg in (raw.get("providers") or {}).items():
+        if not isinstance(cfg, dict):
+            continue
+        base_url = str(cfg.get("base_url", "") or "")
+        result.append({
+            "id": key,
+            "name": cfg.get("name", key),
+            "base_url": base_url or "https://opencode.ai/zen/v1",
+            "protocol": cfg.get("protocol", "openai_chat"),
+            "env_key": cfg.get("api_key_env", ""),
+            "free": not base_url,
+            "requires_key": bool(base_url),
+        })
+    return result
+
+
 def get_default_provider(cat: CatalogConfig) -> Optional[ProviderSlot]:
     """Get the default provider (first with is_default=True)."""
     for slot in cat.providers.values():

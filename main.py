@@ -22,16 +22,9 @@ from src.web import app
 
 
 def _should_escalate_to_research(text: str) -> bool:
-    """Heuristic: long / multi-part / explicit research intent → deep research."""
-    t = text.lower().strip()
-    if len(t.split()) < 8:
-        return False
-    triggers = (
-        "research", "deep dive", "comprehensive", "compare ", " vs ",
-        "versus", "literature review", "survey of", "write a report",
-        "investigate", "analyze in depth", "pros and cons",
-    )
-    return any(x in t for x in triggers)
+    # Shared heuristic (single source of truth — also used by the web API)
+    from src.engine.escalate import should_escalate_to_research
+    return should_escalate_to_research(text)
 
 
 def print_header(text: str) -> None:
@@ -50,7 +43,8 @@ def print_section(text: str) -> None:
 def _check_tavily() -> tuple[bool, str]:
     import os
     key = os.getenv("TAVILY_API_KEY", "")
-    return bool(key), key[:8] + "..." if key else "not set"
+    # Never print a key prefix — even partial key material in logs is a leak.
+    return bool(key), "set" if key else "not set"
 
 
 def doctor() -> None:

@@ -84,6 +84,39 @@ def retriable_status(status: int) -> bool:
     return status in (408, 429, 500, 502, 503, 504)
 
 
+def _extract_stream_text(chunk: dict) -> str:
+    """Pull streamed text out of any common provider SSE payload shape.
+
+    Returns "" for frames that carry no content (usage, pings, errors,
+    message_start, tool calls, etc.). Previously this was hard-wired to the
+    OpenAI ``choices[0].delta.content`` shape only.
+    """
+    # OpenAI-compatible (Groq, OpenAI, OpenRouter, vLLM, Ollama, …)
+    choices = chunk.get("choices")
+    if isinstance(choices, list) and choices:
+        delta = choices[0] if isinstance(choices[0], dict) else {}
+        content = (
+            delta.get("delta", {}).get("content")
+            or delta.get("text")              # completion-style streams
+            or delta.get("message", {}).get("content")
+            or ""
+        )
+        return content or ""
+
+    # Anthropic Messages API
+    if chunk.get("type") == "content_block_delta":
+        d = chunk.get("delta") or {}
+        return d.get("text") or d.get("thinking") or ""
+
+    # Cohere v2 / simple text frames
+    if isinstance(chunk.get("text"), str):
+        return chunk["text"]
+    if isinstance(chunk.get("delta"), str):
+        return chunk["delta"]
+
+    return ""
+
+
 class OpenAICompatibleProvider:
     def __init__(
         self,
@@ -312,20 +345,23 @@ class OpenAICompatibleProvider:
                     line_str = line.decode("utf-8", "ignore").strip()
                     if not line_str or line_str.startswith(":"):
                         continue
+                    if line_str.startswith("event:"):
+                        continue  # Anthropic-style event framing — data lines carry the payload
                     if line_str == "data: [DONE]":
                         break
                     if line_str.startswith("data: "):
                         try:
                             chunk = json.loads(line_str[6:])
-                            delta = (
-                                chunk.get("choices", [{}])[0]
-                                .get("delta", {})
-                                .get("content", "")
-                            )
-                            if delta:
-                                yield delta
-                        except (json.JSONDecodeError, KeyError, IndexError):
+                        except json.JSONDecodeError:
                             continue
+                        # Extract text tolerantly across provider SSE shapes:
+                        #   OpenAI-compatible: {"choices":[{"delta":{"content": "..."}}]}
+                        #   Anthropic:         {"type":"content_block_delta","delta":{"type":"text_delta","text":"..."}}
+                        #   Cohere:            {"text": "..."} / {"delta": "..."}
+                        #   Usage/error frames yield nothing and are skipped.
+                        delta = _extract_stream_text(chunk)
+                        if delta:
+                            yield delta
         except urllib.error.HTTPError as e:
             msg = ""
             try:

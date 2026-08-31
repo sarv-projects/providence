@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
-import { Send } from 'lucide-react'
 import 'katex/dist/katex.min.css'
 import {
   Sidebar,
@@ -10,22 +9,10 @@ import {
   ApprovalBanner,
   LoadingDots,
   PlanEditor,
+  ChatComposer,
 } from '@/components'
 import type { ChatMessage, ApprovalRequest, ResearchPlanPayload } from '@/components'
-import { apiGet, apiPost, type ProgressSnapshot } from '@/lib/api'
-
-async function apiPut<T = any>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(path, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}))
-    throw new Error(err.detail || res.statusText || `PUT ${path} failed`)
-  }
-  return res.json()
-}
+import { apiFetch, apiGet, apiPost, apiPut, type ProgressSnapshot } from '@/lib/api'
 
 export default function Home() {
   const [messages, setMessages] = useState<ChatMessage[]>([
@@ -41,9 +28,13 @@ export default function Home() {
   const [mode, setMode] = useState<'chat' | 'research'>('chat')
   const [researchMode, setResearchMode] = useState('standard')
   const [autonomy, setAutonomy] = useState('L1')
+  const [selectedModel, setSelectedModel] = useState('')
+  const [maxCost, setMaxCost] = useState(5)
+  const [maxIterations, setMaxIterations] = useState(3)
   const [planFirst, setPlanFirst] = useState(false)
   const [pendingPlan, setPendingPlan] = useState<ResearchPlanPayload | null>(null)
   const [planBusy, setPlanBusy] = useState(false)
+  const [activeJobId, setActiveJobId] = useState('')
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([])
   const [progressStatus, setProgressStatus] = useState('')
   const [thinking, setThinking] = useState<{
@@ -58,12 +49,19 @@ export default function Home() {
     stage?: string
   }>({ learned: [], gaps: [], nextAction: '', thoughts: [] })
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const pollAbortRef = useRef<AbortController | null>(null)
+  const activeJobIdRef = useRef('')
 
-  async function pollResearchJob(jobId: string, userText: string) {
+  async function pollResearchJob(jobId: string, userText: string, signal: AbortSignal) {
+    activeJobIdRef.current = jobId
+    setActiveJobId(jobId)
     let finished = false
     let jobError = ''
     for (let i = 0; i < 900 && !finished; i++) {
-      await new Promise((r) => setTimeout(r, 1000))
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, 1000)
+        signal.addEventListener('abort', () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')) }, { once: true })
+      })
       let snap: ProgressSnapshot = {}
       try {
         if (jobId) {
@@ -75,11 +73,10 @@ export default function Home() {
             if (job.status === 'awaiting_plan') {
               setProgressStatus('Awaiting plan approval…')
               // try to load plan from thoughts or list
-              const plans = await apiGet<{ plans?: ResearchPlanPayload[] }>(
-                '/api/research/plans?limit=5'
-              ).catch(() => ({ plans: [] }))
-              const match = (plans.plans || []).find((p) => p.job_id === jobId) ||
-                (plans.plans || [])[0]
+              const planId = (job as ProgressSnapshot & { plan_id?: string }).plan_id
+              const match = planId
+                ? await apiGet<ResearchPlanPayload>(`/api/research/plans/${planId}`, { signal })
+                : null
               if (match) {
                 setPendingPlan(match)
                 setIsLoading(false)
@@ -94,10 +91,10 @@ export default function Home() {
               status: job.status || job.stage,
             }
           } catch {
-            snap = await apiGet('/api/research/progress')
+            snap = await apiGet(`/api/research/progress?job_id=${encodeURIComponent(jobId)}`, { signal })
           }
         } else {
-          snap = await apiGet('/api/research/progress')
+          snap = await apiGet('/api/research/progress', { signal })
         }
         const label = snap.status || snap.stage || 'running'
         const secs = snap.section_progress || ''
@@ -128,26 +125,23 @@ export default function Home() {
         // Transient poll failure (backend restart etc.) — keep polling
       }
     }
+    if (!finished) throw new Error('Research timed out before completion')
 
     let finalSnap: ProgressSnapshot = {}
     if (jobId) {
-      finalSnap = await apiGet(`/api/jobs/${jobId}`).catch(() => ({}))
+      finalSnap = await apiGet(`/api/jobs/${jobId}`, { signal }).catch(() => ({}))
     }
     if (!finalSnap.report) {
-      finalSnap = await apiGet('/api/research/progress').catch(() => ({}))
+      finalSnap = await apiGet(`/api/research/progress?job_id=${encodeURIComponent(jobId)}`, { signal }).catch(() => ({}))
     }
     // Surface real failures instead of a misleading "Research complete" message
     const errorText = jobError || finalSnap.error
     if (errorText) {
       throw new Error(errorText)
     }
-    let lastReport = finalSnap.report || ''
-    if (!lastReport) {
-      lastReport =
-        `## Research complete\n\n**Query:** ${userText}\n\n**Mode:** ${researchMode}\n\n` +
-        `Findings: ${finalSnap.findings_count || 0} · Elapsed: ${finalSnap.elapsed_s || 0}s\n\n` +
-        `_Path: ${finalSnap.markdown_path || 'reports/'}_`
-    } else if (finalSnap.markdown_path) {
+    if (!finalSnap.report) throw new Error('Research ended without a report')
+    let lastReport = finalSnap.report
+    if (finalSnap.markdown_path) {
       lastReport += `\n\n---\n_Saved: \`${finalSnap.markdown_path}\`_`
     }
 
@@ -157,6 +151,8 @@ export default function Home() {
     ])
     setProgressStatus('')
     setThinking({ learned: [], gaps: [], nextAction: '', thoughts: [] })
+    activeJobIdRef.current = ''
+    setActiveJobId('')
   }
 
   async function handlePlanApprove(edited: {
@@ -179,7 +175,13 @@ export default function Home() {
       })
       const runRes = await apiPost<{ job_id?: string; status?: string }>(
         `/api/research/plans/${pendingPlan.plan_id}/run`,
-        { background: true, clarifications: edited.clarifications }
+        {
+          background: true,
+          clarifications: edited.clarifications,
+          model: selectedModel || undefined,
+          max_cost_usd: maxCost,
+          max_iterations: maxIterations,
+        }
       )
       setPendingPlan(null)
       setIsLoading(true)
@@ -190,7 +192,8 @@ export default function Home() {
         nextAction: 'Gathering sources with approved plan',
         thoughts: [],
       })
-      await pollResearchJob(runRes?.job_id || '', pendingPlan.query)
+      pollAbortRef.current = new AbortController()
+      await pollResearchJob(runRes?.job_id || '', pendingPlan.query, pollAbortRef.current.signal)
     } catch (err) {
       setMessages((prev) => [
         ...prev,
@@ -204,14 +207,19 @@ export default function Home() {
       setPlanBusy(false)
       setIsLoading(false)
       setProgressStatus('')
+      activeJobIdRef.current = ''
+      setActiveJobId('')
     }
   }
 
   useEffect(() => {
-    apiGet<{ mode?: string; autonomy?: string }>('/api/settings')
+    apiGet<{ mode?: string; autonomy?: string; default_model?: string; max_cost?: number; max_iterations?: number }>('/api/settings')
       .then((data) => {
         if (data?.mode) setResearchMode(data.mode)
         if (data?.autonomy) setAutonomy(data.autonomy)
+        if (data?.default_model) setSelectedModel(data.default_model)
+        if (data?.max_cost != null) setMaxCost(data.max_cost)
+        if (data?.max_iterations != null) setMaxIterations(data.max_iterations)
       })
       .catch(() => {})
   }, [])
@@ -233,6 +241,19 @@ export default function Home() {
     const interval = setInterval(checkApprovals, 10000)
     return () => clearInterval(interval)
   }, [])
+
+  useEffect(() => () => pollAbortRef.current?.abort(), [])
+
+  async function cancelActiveResearch() {
+    const jobId = activeJobIdRef.current
+    if (jobId) await apiPost(`/api/jobs/${jobId}/cancel`, {}).catch(() => {})
+    pollAbortRef.current?.abort()
+    pollAbortRef.current = null
+    activeJobIdRef.current = ''
+    setActiveJobId('')
+    setIsLoading(false)
+    setProgressStatus('Research cancelled')
+  }
 
   async function handleApprovalResponse(approvalId: string, approved: boolean) {
     try {
@@ -261,12 +282,17 @@ export default function Home() {
 
     try {
       if (mode === 'chat') {
-        const response = await fetch('/api/chat', {
+        const controller = new AbortController()
+        pollAbortRef.current = controller
+        const response = await apiFetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          timeoutMs: 120000,
           body: JSON.stringify({
             message: userText,
             mode: 'fast',
+            model: selectedModel || undefined,
             session_id: 'default',
             stream: true,
             escalate: true,
@@ -349,6 +375,9 @@ export default function Home() {
             query: userText,
             mode: researchMode,
             autonomy,
+            model: selectedModel || undefined,
+            max_cost_usd: maxCost,
+            max_iterations: maxIterations,
           })
           setPendingPlan(planRes)
           setMessages((prev) => [
@@ -376,11 +405,16 @@ export default function Home() {
           autonomy,
           background: true,
           skip_clarify: true,
+          model: selectedModel || undefined,
+          max_cost_usd: maxCost,
+          max_iterations: maxIterations,
         })
         const jobId = startRes?.job_id || ''
-        await pollResearchJob(jobId, userText)
+        pollAbortRef.current = new AbortController()
+        await pollResearchJob(jobId, userText, pollAbortRef.current.signal)
       }
     } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return
       setMessages((prev) => [
         ...prev,
         {
@@ -392,6 +426,8 @@ export default function Home() {
       setProgressStatus('')
     } finally {
       setIsLoading(false)
+      activeJobIdRef.current = ''
+      setActiveJobId('')
     }
   }
 
@@ -439,90 +475,35 @@ export default function Home() {
               />
             )}
             {isLoading && (
-              <LoadingDots
-                label={
-                  mode === 'research'
-                    ? progressStatus || 'Executing multi-agent research graph...'
-                    : 'Streaming response...'
-                }
-              />
+              <div>
+                <LoadingDots label={mode === 'research' ? progressStatus || 'Executing multi-agent research graph...' : 'Streaming response...'} />
+                {mode === 'research' && activeJobId && (
+                  <button type="button" onClick={cancelActiveResearch} className="mt-2 text-xs text-red-600 hover:underline">
+                    Cancel research
+                  </button>
+                )}
+              </div>
             )}
             <div ref={messagesEndRef} />
           </div>
         </div>
 
-        <div className="border-t border-gray-200 dark:border-gray-700 p-4 bg-white dark:bg-gray-800">
-          <form onSubmit={handleSubmit} className="max-w-4xl mx-auto">
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                placeholder={
-                  mode === 'chat'
-                    ? 'Ask any question or start a conversation...'
-                    : 'Enter deep research topic...'
-                }
-                className="flex-1 px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
-                disabled={isLoading}
-              />
-              <button
-                type="submit"
-                disabled={isLoading || !input.trim()}
-                className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
-              >
-                <Send className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="text-xs text-gray-500 mt-2 flex flex-wrap justify-between items-center gap-2">
-              <span>
-                Mode:{' '}
-                <strong>
-                  {mode === 'chat'
-                    ? 'Multi-Turn Chat (streaming)'
-                    : `Deep Research (${researchMode} / ${autonomy})`}
-                </strong>
-              </span>
-              {mode === 'research' && (
-                <div className="flex gap-2">
-                  <select
-                    value={researchMode}
-                    onChange={(e) => setResearchMode(e.target.value)}
-                    className="text-xs border rounded px-2 py-1 bg-white dark:bg-gray-900"
-                  >
-                    <option value="quick">quick</option>
-                    <option value="standard">standard</option>
-                    <option value="deep">deep</option>
-                    <option value="academic">academic</option>
-                    <option value="recency">recency</option>
-                    <option value="compare">compare</option>
-                    <option value="ultra-long">ultra-long</option>
-                  </select>
-                  <select
-                    value={autonomy}
-                    onChange={(e) => setAutonomy(e.target.value)}
-                    className="text-xs border rounded px-2 py-1 bg-white dark:bg-gray-900"
-                  >
-                    <option value="L1">L1 auto</option>
-                    <option value="L2">L2 plan review</option>
-                    <option value="L3">L3 hard budget</option>
-                  </select>
-                  <label className="flex items-center gap-1 text-xs cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={planFirst || autonomy === 'L2'}
-                      disabled={autonomy === 'L2'}
-                      onChange={(e) => setPlanFirst(e.target.checked)}
-                      className="rounded"
-                    />
-                    Edit plan first
-                  </label>
-                </div>
-              )}
-              <span className="opacity-0 select-none text-[10px]">&#8203;</span>
-            </div>
-          </form>
-        </div>
+        <ChatComposer
+          input={input}
+          onInputChange={setInput}
+          onSubmit={handleSubmit}
+          disabled={isLoading}
+          mode={mode}
+          onModeChange={setMode}
+          researchMode={researchMode}
+          onResearchModeChange={setResearchMode}
+          autonomy={autonomy}
+          onAutonomyChange={setAutonomy}
+          planFirst={planFirst}
+          onPlanFirstChange={setPlanFirst}
+          selectedModel={selectedModel || 'opencode_free/nemotron-3-ultra-free'}
+          onModelChange={setSelectedModel}
+        />
       </div>
     </div>
   )

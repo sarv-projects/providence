@@ -7,6 +7,7 @@ Progressive output pattern:
   3. Verification & audit pass over assembled draft
 """
 
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import re
@@ -379,7 +380,7 @@ def _audit_verification_pass(state: ResearchState, body_sections: list[tuple[int
                     state["sections"][res_idx]["sources"] = urls
                 content = new_content
             except Exception:
-                pass
+                logging.getLogger(__name__).debug("ignored error", exc_info=True)
 
         # Citation soft-check: body sections should have at least one [n] or URL
         has_cite = bool(
@@ -577,4 +578,4 @@ def _update_progress(state: ResearchState, step: str, **kwargs) -> None:
             total_sections=len(sections),
         )
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("ignored error", exc_info=True)

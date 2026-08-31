@@ -18,6 +18,11 @@ reports/
 # Runtime data (vector store, FTS, chat memory, vault)
 data/
 
+# Agent tooling runtime state (session files, local DB) — never ship these
+.omo/
+.freebuff/
+.codegraph
+
 # Memory
 ~/.providence_memory.json
 

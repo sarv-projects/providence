@@ -112,6 +112,11 @@ TESTS = [
 ]
 
 if __name__ == "__main__":
+    # Phase D exercises the live tool bus (Wikipedia/Exa HTTP calls) — skip
+    # cleanly in offline environments instead of hanging on DNS.
+    from tests_common import require_live_network
+    require_live_network("test_phase_d")
+
     passed = 0
     for t in TESTS:
         try:
