@@ -1,8 +1,12 @@
 <div align="center">
 
-# Providence
+<img src="docs/screenshots/architecture.svg" alt="Providence" width="120" />
 
-**Autonomous deep-research engine with fetched-source provenance, adversarial review, and a resilient multi-provider gateway.**
+# 🔍 Providence
+
+### *Autonomous deep research, with receipts.*
+
+**A multi-agent research engine that plans, searches, adversarially reviews, and compiles source-grounded reports — where every claim traces back to a fetched page.**
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](https://python.org)
@@ -10,6 +14,35 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-backend-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Next.js 14](https://img.shields.io/badge/Next.js-14-000000?logo=nextdotjs&logoColor=white)](https://nextjs.org)
 [![uv](https://img.shields.io/badge/uv-package%20manager-DE5FE9)](https://docs.astral.sh/uv/)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
+**No vendor API keys required for the default path** · [Quickstart](#-quickstart) · [Live demo stack](#-web-ui--dashboard) · [Docs](#-docs)
+
+</div>
+
+---
+
+## ✨ Highlights
+
+| | |
+|:---|:---|
+| 🧾 **Fetched-source ship-gate** | Final references come *only* from pages fetched during the current run — hallucinated URLs are dropped before export. |
+| ⚔️ **Adversarial review** | A Devil's Advocate agent hunts counter-evidence; a Socratic Claim Adjudicator re-gathers for weak claims. |
+| 🔭 **STORM-style perspectives** | Scout generates diverse perspective lenses that seed counter-queries, the plan pack, and the compiler's "Research perspectives" section. |
+| 🧠 **Isolated per-run RAG** | LanceDB + FTS5 hybrid (dense/keyword RRF) — each run gets its own index; writers see only retrieved chunks. |
+| 🔌 **Resilient gateway** | Multi-provider routing with circuit breakers, token-bucket rate limits, and automatic failover. Default route is **free** (OpenCode Zen). |
+| 🖥️ **Ambient mission-control UI** | Next.js glassmorphism interface with a live progress banner: stage pills, perspective chips, Learned/Gaps feeds, and a collapsible thinking stream. |
+| 📊 **Evaluated, not vibed** | Three internal benchmark rounds with per-claim fact-check scoring and reproducible rubrics. |
+
+<div align="center">
+
+```bash
+git clone https://github.com/sarv-projects/providence.git && cd providence
+bash scripts/install.sh
+uv run python main.py research "How does RAG reduce hallucination in LLMs?" --mode standard
+```
+
+*Reports land in `reports/` as Markdown + MathJax-rendered HTML.*
 
 </div>
 
@@ -19,9 +52,7 @@ Providence is a research system for producing inspectable, source-grounded repor
 
 The live LangGraph pipeline combines planning, iterative retrieval, critique, counter-evidence search, span-based claim verification, RAG-grounded section writing, and citation compilation. It is exposed through both a CLI and a Next.js/FastAPI web application.
 
-**Zero vendor API keys are required for the default path** (internet access is still required). Add Gemini, Exa, or other providers when you want stronger reasoning, search, or failover options.
-
-![Providence architecture](docs/screenshots/architecture.svg)
+Internet access is still required. Add Gemini, Exa, or other providers when you want stronger reasoning, search, or failover options.
 
 ### At a glance
 
@@ -36,16 +67,18 @@ The live LangGraph pipeline combines planning, iterative retrieval, critique, co
 
 > **Scope note:** provenance is not a guarantee of truth. The system can verify that a quoted span came from a fetched page; source quality, ambiguity, and model judgment still require human review.
 
-```bash
-git clone https://github.com/sarv-projects/providence.git
-cd providence
-bash scripts/install.sh
-uv run python main.py research "How does RAG reduce hallucination in LLMs?" --mode standard
-```
+---
+
+## 🆕 What's new
+
+- **STORM-style perspective diversity** — the scout now generates a set of distinct analytical perspectives (with a deterministic fallback set), wired into adversary counter-queries, the planner pack, and a new *Research perspectives* section in compiled reports; surfaced live in the UI progress banner as perspective chips.
+- **Ambient UI redesign** — full token-based theming (light/dark), gradient orbs, glassmorphism panels, gradient brand/active states, hover-lift cards, and a redesigned 4-row research progress panel with a collapsible color-coded thinking stream.
+- **Lenient JSON parsing (`src/jsonutil.py`)** — regex pre-pass + `json-repair` fallback across all agent call sites, so malformed model output no longer crashes a run.
+- **OpenCode Zen free is the default primary** — zero-key research end-to-end with automatic failover to keyed providers.
 
 ---
 
-## Capabilities
+## 💪 Capabilities
 
 - Iterative retrieval with a critic that can request another research pass within configured budgets.
 - Counter-evidence search and a bounded Socratic re-gather step for weak claims.
@@ -61,25 +94,25 @@ Detailed agent, retrieval, and provider behavior lives in [`docs/ARCHITECTURE.md
 
 ## Table of Contents
 
-- [Design Goals](#design-goals)
-- [Engineering Highlights](#engineering-highlights)
-- [Architecture](#architecture)
-- [Quickstart](#quickstart)
-- [Research Modes](#research-modes)
-- [Providers & Keys](#providers--keys)
-- [CLI Reference](#cli-reference)
-- [Web UI & Dashboard](#web-ui--dashboard)
-- [Security & Limitations](#security--limitations)
-- [Benchmarks](#benchmarks)
-- [Project Layout](#project-layout)
-- [Testing](#testing)
-- [Docs](#docs)
-- [Contributing](#contributing)
-- [License](#license)
+- [🎯 Design Goals](#-design-goals)
+- [🛠️ Engineering Highlights](#️-engineering-highlights)
+- [🏗️ Architecture](#️-architecture)
+- [🚀 Quickstart](#-quickstart)
+- [🎛️ Research Modes](#️-research-modes)
+- [🔑 Providers & Keys](#-providers--keys)
+- [⌨️ CLI Reference](#️-cli-reference)
+- [🖥️ Web UI & Dashboard](#️-web-ui--dashboard)
+- [🔒 Security & Limitations](#-security--limitations)
+- [📊 Benchmarks](#-benchmarks)
+- [📁 Project Layout](#-project-layout)
+- [🧪 Testing](#-testing)
+- [📚 Docs](#-docs)
+- [🤝 Contributing](#-contributing)
+- [📜 License](#-license)
 
 ---
 
-## Design Goals
+## 🎯 Design Goals
 
 | Constraint | Implementation |
 |---|---|
@@ -89,7 +122,7 @@ Detailed agent, retrieval, and provider behavior lives in [`docs/ARCHITECTURE.md
 | One-shot megaprompt failures | **Parallel section synthesis** — each section is written from its own targeted chunk retrieval. |
 | Expensive API lock-in | **Resilient multi-provider gateway** — circuit breakers, token-bucket rate limiters, and automatic failover. The default Zen route does not require a vendor key. |
 
-## Engineering Highlights
+## 🛠️ Engineering Highlights
 
 The repository is designed to be inspectable, testable, and replaceable at the component boundaries:
 
@@ -104,7 +137,7 @@ The repository is designed to be inspectable, testable, and replaceable at the c
 
 ---
 
-## Architecture
+## 🏗️ Architecture
 
 The A4 LangGraph graph (`src/graph.py`):
 
@@ -162,7 +195,7 @@ flowchart LR
 
 ---
 
-## Quickstart
+## 🚀 Quickstart
 
 **Requirements:** Python 3.10+, [uv](https://docs.astral.sh/uv/). Node 18+ optional (web UI).
 
@@ -192,7 +225,7 @@ TAVILY_API_KEY=     # https://tavily.com                  (additional search)
 
 ---
 
-## Research Modes
+## 🎛️ Research Modes
 
 Pass `--mode <name>`. Default is `standard`.
 
@@ -224,7 +257,7 @@ uv run python main.py research "Post-quantum cryptography standards survey" \
 
 ---
 
-## Providers & Keys
+## 🔑 Providers & Keys
 
 All LLM calls go through `src/gateway/` — circuit breakers, RPM/TPM token-bucket rate limiters, jitter retry, automatic failover. No LiteLLM process.
 
@@ -249,7 +282,7 @@ Full catalog: [`config/providers.yaml`](config/providers.yaml) · [`docs/PROVIDE
 
 ---
 
-## CLI Reference
+## ⌨️ CLI Reference
 
 ```bash
 # Research
@@ -276,7 +309,7 @@ uv run python main.py eval all
 
 ---
 
-## Web UI & Dashboard
+## 🖥️ Web UI & Dashboard
 
 The frontend is a **Next.js 14** app (`frontend/`) wired to the FastAPI backend via rewrites. In local development, `/api/*` requests are proxied to `localhost:8001` by `next.config.mjs`.
 
@@ -370,7 +403,7 @@ uv run python -m src.dashboard --port 8080
 
 ---
 
-## Security & Limitations
+## 🔒 Security & Limitations
 
 - **No production authentication is included by default.** The development API enables permissive CORS and should sit behind an authenticated reverse proxy before public deployment.
 - **Treat external content as untrusted input.** The renderer escapes report text, validates outbound link schemes, and the scraper blocks private/link-local destinations; still review provider and deployment settings before exposing the service.
@@ -383,7 +416,7 @@ For a vulnerability report, see [`SECURITY.md`](SECURITY.md). For changes, see [
 
 ---
 
-## Benchmarks
+## 📊 Benchmarks
 
 **Internal topic suite** — scored against independently researched ground truth across geopolitical, scientific, financial, and technology domains. Fact-check accuracy **varies by round** (suite size and configuration differed per round — see each file for its protocol):
 
@@ -403,7 +436,7 @@ Full per-topic rubrics, fact-check matrices, and three scoring rounds: [`benchma
 
 ---
 
-## Project Layout
+## 📁 Project Layout
 
 ```
 main.py                     CLI entrypoint
@@ -440,7 +473,7 @@ SECURITY.md                 Vulnerability reporting and deployment warnings
 
 ---
 
-## Testing
+## 🧪 Testing
 
 ```bash
 uv run python test_phase_a.py     # provider catalog, gateway Zen-free integration
@@ -468,7 +501,7 @@ uv run python main.py eval all    # full component + system suite
 
 ---
 
-## Docs
+## 📚 Docs
 
 | Doc | Purpose |
 |---|---|
@@ -477,12 +510,12 @@ uv run python main.py eval all    # full component + system suite
 | [PROVIDERS.md](docs/PROVIDERS.md) | Zen free model IDs, Gemini setup, optional paid providers |
 | [GATEWAY.md](docs/GATEWAY.md) | Circuit-breaker mechanics, rate limiting, ops dashboard |
 
-## Contributing
+## 🤝 Contributing
 
 Bug reports, focused improvements, and reproducible evaluation results are welcome. Start with [`CONTRIBUTING.md`](CONTRIBUTING.md); security issues belong in [`SECURITY.md`](SECURITY.md), not public issues.
 
 ---
 
-## License
+## 📜 License
 
 [MIT](LICENSE)
