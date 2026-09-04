@@ -13,6 +13,7 @@ export function getStoredTheme(): Theme | null {
 
 export function applyTheme(theme: Theme) {
   document.documentElement.classList.toggle('dark', theme === 'dark')
+  document.documentElement.setAttribute('data-theme', theme)
   try {
     localStorage.setItem('theme', theme)
   } catch {

@@ -138,15 +138,23 @@ def create_research_plan(
     mode: str = "standard",
     autonomy: str = "L1",
     clarifications: dict | None = None,
+    lenses: dict | None = None,
 ) -> dict:
     """Generate an editable research plan (and clarifying questions if needed).
 
     Does not run gather/synth. Returns plan store payload.
+    `lenses` = {recency, academic, compare} toggles merged over the mode.
+    Legacy lens-mode names (recency/academic/compare) resolve to standard +
+    their implied lens.
     """
     from src.engine.plan_store import get_plans
     from src.engine.clarify import generate_clarifying_questions, apply_clarifications, is_ambiguous
     from src.engine.agents.planner import planner
     from src.engine.agents.thinker import thinker_plan_refine, reset_thinker
+    from src.engine.modes import resolve_mode, merge_lenses
+
+    mode, implied = resolve_mode(mode)
+    lens = merge_lenses(implied, lenses)
 
     store = get_plans()
     entry = store.create(query, mode=mode, autonomy=autonomy)
@@ -174,7 +182,13 @@ def create_research_plan(
                 "refined_query_hint": clar.get("refined_query_hint") or query,
             },
         )
-        return store.get(entry.plan_id).to_dict()  # type: ignore
+        return store.get(entry.plan_id).to_dict() if store.get(entry.plan_id) else {
+            "plan_id": entry.plan_id,
+            "query": query,
+            "status": "awaiting_clarification",
+            "clarifying_questions": entry.clarifying_questions,
+            "needs_clarification": True,
+        }
 
     reset_thinker()
     state = initial_state(enriched)
@@ -182,11 +196,11 @@ def create_research_plan(
     state["autonomy"] = autonomy
     state["clarifications"] = clarifications or {}
     state["mode_flags"] = {
-        "structured_output": mode == "compare",
-        "academic_bias": mode == "academic",
+        "structured_output": mode == "compare" or lens["compare"],
+        "academic_bias": mode == "academic" or lens["academic"],
         "force_arxiv": mode in ("deep", "academic", "ultra-long", "standard"),
         "vault_rag": True,
-        "recency_bias": mode == "recency",
+        "recency_bias": mode == "recency" or lens["recency"],
         "requires_temporal": False,
     }
     state = planner(state)
@@ -208,7 +222,16 @@ def create_research_plan(
         needs_clarification=False,
         query=enriched if clarifications else query,
     )
-    return store.get(entry.plan_id).to_dict()  # type: ignore
+    got = store.get(entry.plan_id)
+    return got.to_dict() if got else {
+        "plan_id": entry.plan_id,
+        "query": enriched if clarifications else query,
+        "status": "awaiting_approval" if autonomy.upper() in ("L2", "L3") else "draft",
+        "plan": plan,
+        "outline": outline,
+        "search_queries": queries,
+        "needs_clarification": False,
+    }
 
 
 def run_research(
@@ -226,6 +249,7 @@ def run_research(
     max_cost_usd: float | None = None,
     max_iterations_override: int | None = None,
     max_tokens: int | None = None,
+    lenses: dict | None = None,
 ) -> ResearchState:
     """Run multi-agent research.
 
@@ -233,11 +257,16 @@ def run_research(
     plan_only=True: generate editable plan and return (no gather).
     approved_plan: skip planning; use this plan dict + search_queries/outline.
     L2 without approved_plan: auto plan_only (require approval).
+    lenses: {recency, academic, compare} toggles merged over the mode.
     """
+    from src.engine.modes import resolve_mode as _resolve_mode
+    mode, _implied_lenses = _resolve_mode(mode)
+    lenses = _implied_lenses if lenses is None else {**_implied_lenses, **lenses}
     if plan_only or (autonomy.upper() == "L2" and not approved_plan and not background):
         # Synchronous plan generation path
         payload = create_research_plan(
-            query, mode=mode, autonomy=autonomy, clarifications=clarifications
+            query, mode=mode, autonomy=autonomy, clarifications=clarifications,
+            lenses=lenses,
         )
         st = initial_state(query)
         st["plan"] = payload.get("plan") or {}
@@ -264,7 +293,8 @@ def run_research(
                 # L2 background without approved plan → generate plan first, pause
                 if autonomy.upper() == "L2" and not approved_plan:
                     payload = create_research_plan(
-                        query, mode=mode, autonomy=autonomy, clarifications=clarifications
+                        query, mode=mode, autonomy=autonomy, clarifications=clarifications,
+                        lenses=lenses,
                     )
                     get_jobs().update(
                         job.job_id,
@@ -296,6 +326,7 @@ def run_research(
                     max_cost_usd=max_cost_usd,
                     max_iterations_override=max_iterations_override,
                     max_tokens=max_tokens,
+                    lenses=lenses,
                 )
             except Exception as e:
                 if not get_jobs().is_cancelled(job.job_id):
@@ -348,7 +379,7 @@ def run_research(
             skip_clarify=skip_clarify, mode_config=mode_config, registry=registry,
             dial=dial, budgets=budgets, intensity=intensity, max_iters=max_iters,
             progress=progress, model=model, max_cost_usd=max_cost_usd,
-            max_tokens=max_tokens,
+            max_tokens=max_tokens, lenses=lenses,
         )
     finally:
         end_run_progress()
@@ -357,7 +388,7 @@ def run_research(
 def _run_research_inner(
     query, *, mode, autonomy, job_id, plan_id, approved_plan, clarifications,
     skip_clarify, mode_config, registry, dial, budgets, intensity, max_iters,
-    progress, model=None, max_cost_usd=None, max_tokens=None,
+    progress, model=None, max_cost_usd=None, max_tokens=None, lenses=None,
 ):
     from src.engine.agents.thinker import (
         disable_thinker as _disable_thinker,
@@ -460,10 +491,12 @@ def _run_research_inner(
         "spent_usd": 0.0,
         "tokens_used": 0,
     }
+    from src.engine.modes import normalize_lenses as _normalize_lenses
+    _lens = _normalize_lenses(lenses)
     state["mode_flags"] = {
-        "recency_bias": mode_config.recency_bias,
-        "academic_bias": mode_config.academic_bias or mode == "academic",
-        "structured_output": mode_config.structured_output or mode == "compare",
+        "recency_bias": mode_config.recency_bias or _lens["recency"],
+        "academic_bias": mode_config.academic_bias or mode == "academic" or _lens["academic"],
+        "structured_output": mode_config.structured_output or mode == "compare" or _lens["compare"],
         "vault_rag": mode_config.vault_rag,
         "requires_temporal": mode_config.requires_temporal,
         "force_arxiv": mode in ("deep", "academic", "ultra-long", "standard"),
@@ -497,20 +530,33 @@ def _run_research_inner(
 
     # Per-run cost/token accounting: route every LLM call made on this thread
     # straight into this run's budgets (replaces the race-prone global-metrics
-    # baseline approach for runs that go through here).
+    # baseline approach for runs that go through here). The sink writes into a
+    # side holder — NOT into the pre-invoke `state` dict — because LangGraph
+    # builds the result from node updates and never propagates direct
+    # mutations of the input dict; writing into `state` here left
+    # result["budgets"] at 0 and silently disabled cost/token enforcement.
     from src.llm import set_run_cost_sink, clear_run_cost_sink
 
+    _run_spend = {"tokens": 0, "cost": 0.0}
+
     def _run_cost_sink(prompt_tokens: int, completion_tokens: int, cost_usd: float) -> None:
-        b = state.setdefault("budgets", {})
-        b["tokens_used"] = int(b.get("tokens_used") or 0) + int(prompt_tokens) + int(completion_tokens)
-        b["spent_usd"] = float(b.get("spent_usd") or 0) + float(cost_usd)
+        _run_spend["tokens"] += int(prompt_tokens) + int(completion_tokens)
+        _run_spend["cost"] += float(cost_usd)
 
     set_run_cost_sink(_run_cost_sink)
     from src.llm import set_run_request_context, clear_run_request_context
     set_run_request_context(model=model, max_tokens=int(max_tokens or dial.max_tokens_per_call))
     try:
         result = graph.invoke(state)
-        if mode_config.structured_output or mode == "compare":
+        # Merge the side-channel spend into the returned budgets so
+        # check_budgets / progress / job records see real values.
+        try:
+            rb = result.setdefault("budgets", {})
+            rb["tokens_used"] = int(rb.get("tokens_used") or 0) + _run_spend["tokens"]
+            rb["spent_usd"] = float(rb.get("spent_usd") or 0) + _run_spend["cost"]
+        except Exception:
+            logging.getLogger(__name__).debug("ignored error", exc_info=True)
+        if mode_config.structured_output or mode == "compare" or (result.get("mode_flags") or {}).get("structured_output"):
             result = _ensure_compare_structure(result)
         result = _ensure_sources_at_end(result)
         progress.update(

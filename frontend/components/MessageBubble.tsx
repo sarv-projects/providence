@@ -6,6 +6,7 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import { Check, Copy, Sparkles, User } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { safeHttpUrl } from '@/lib/api'
 
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system'
@@ -75,7 +76,23 @@ export function MessageBubble({ message }: MessageBubbleProps) {
               </div>
             )}
             <div className="markdown-body">
-              <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm, remarkMath]}
+                rehypePlugins={[rehypeKatex]}
+                components={{
+                  a: ({ href, children }) => {
+                    // Model output is untrusted: only render http(s) links as
+                    // anchors; javascript:/data: hrefs become plain text.
+                    const safe = safeHttpUrl(typeof href === 'string' ? href : undefined)
+                    if (!safe) return <span>{children}</span>
+                    return (
+                      <a href={safe} target="_blank" rel="noopener noreferrer">
+                        {children}
+                      </a>
+                    )
+                  },
+                }}
+              >
                 {message.content}
               </ReactMarkdown>
             </div>

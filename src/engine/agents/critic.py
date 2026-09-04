@@ -86,7 +86,7 @@ def critic(state: ResearchState) -> ResearchState:
         print(f"\n🔎 [Critic] Budget force-complete: {reason}")
         return force_complete(state, reason)
 
-    max_iter = state.get("max_iterations", 6)
+    max_iter = state.get("max_iterations", 6) or 6
     iteration = int(state.get("iteration") or 0)
     findings = list(state.get("findings") or [])
     gaps = list(state.get("gaps") or [])
@@ -206,7 +206,10 @@ def critic(state: ResearchState) -> ResearchState:
     state["off_topic"] = False
     findings_text = "\n".join(f"- {f}" for f in findings)
     gaps_text = "\n".join(f"- {g}" for g in gaps)
-    outline_titles = [s.get("title", "") for s in state.get("outline", [])]
+    outline_titles = [
+        (s.get("title", "") if isinstance(s, dict) else str(s))
+        for s in state.get("outline", [])
+    ]
 
     # RE-TRAC context: open hypotheses from earlier iterations
     memory = state.get("research_memory") or {}
@@ -218,6 +221,8 @@ def critic(state: ResearchState) -> ResearchState:
     ledger = state.get("task_ledger") or []
     led: dict[str, int] = {}
     for e in ledger:
+        if not isinstance(e, dict):
+            continue
         tid = str(e.get("task_id") or "")
         led[tid] = int(led.get(tid, 0)) + 1
     coverage = ", ".join(f"{k}:{v}" for k, v in led.items()) or "(no ledger yet)"

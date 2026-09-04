@@ -62,10 +62,14 @@ def _find_verbatim_span(text: str, quote: str) -> dict[str, Any] | None:
 
     # Permit line wrapping/HTML extraction whitespace changes, but no fuzzy
     # substitutions: a quote must still be a contiguous source span.
-    parts = [re.escape(p) for p in re.split(r"\s+", quote) if p]
+    # Cap the pattern: unbounded LLM quotes build giant regexes (ReDoS).
+    parts = [re.escape(p) for p in re.split(r"\s+", quote) if p][:60]
     if not parts:
         return None
-    match = re.search(r"\s+".join(parts), text, re.IGNORECASE | re.DOTALL)
+    try:
+        match = re.search(r"\s+".join(parts), text, re.IGNORECASE | re.DOTALL)
+    except re.error:
+        return None
     if not match:
         return None
     return {"quote": text[match.start():match.end()], "start": match.start(), "end": match.end()}

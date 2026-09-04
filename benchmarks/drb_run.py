@@ -83,7 +83,10 @@ def run_one(query: dict, mode: str) -> dict:
         result = run_research(prompt, mode=mode, autonomy="L1", skip_clarify=True)
         report = result.get("report") or ""
         if not report:
-            report = open(result.get("markdown_path", ""), encoding="utf-8", errors="replace").read()
+            md_path = result.get("markdown_path", "")
+            if md_path and os.path.isfile(md_path):
+                with open(md_path, encoding="utf-8", errors="replace") as f:
+                    report = f.read()
         article = report.strip()
         log_line = {
             "id": qid,
@@ -133,6 +136,13 @@ def main() -> None:
     ok = fail = 0
     for q in pending:
         log_line = run_one(q, args.mode)
+        # An empty article means the run produced nothing — do NOT record it
+        # as done, or resume (load_done_ids) skips it forever in the 100-task
+        # run. Retry next invocation instead.
+        if not (log_line.get("article") or "").strip():
+            fail += 1
+            print(f"[task {q['id']}] EMPTY: no article produced — not recorded, will retry", flush=True)
+            continue
         append_result(log_line)
         if log_line["error"]:
             fail += 1

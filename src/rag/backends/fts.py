@@ -123,6 +123,12 @@ class FTSStore:
             # Keep 2-char terms ("AI", "RL", "ML") — unicode61 yields only
             # alnum runs so short tokens are real terms, not noise.
             tokens = [t for t in re.split(r"[^a-zA-Z0-9]+", clean) if len(t) >= 2][:8]
+            if not tokens:
+                # Empty / punctuation-only / CJK-only query: FTS MATCH would
+                # error and the LIKE fallback ('%%') would match EVERYTHING.
+                # Return [] instead of leaking arbitrary rows.
+                conn.close()
+                return []
             match_clause = (
                 " AND ".join(f'"{t}"' for t in tokens) if tokens else f'"{clean}"'
             )
@@ -149,12 +155,13 @@ class FTSStore:
                 rows = None
 
             if rows is None:
-                # FTS query parse error (special chars) — fall back to LIKE
-                like_term = f"%{clean[:50]}%"
+                # FTS query parse error (special chars) — fall back to LIKE.
+                # Escape LIKE wildcards so "100%" doesn't match "100X".
+                like_term = f"%{clean[:50].replace(chr(92), chr(92)*2).replace('%', chr(92)+'%').replace('_', chr(92)+'_')}%"
                 rows = conn.execute(
                     f"""SELECT id, text, url, title, source_type, acl, chunk_index, run_id,
                               parent_id, parent_text, 1.0
-                       FROM chunks WHERE text LIKE ?{meta_where.replace('c.', '')} LIMIT ?""",
+                        FROM chunks WHERE text LIKE ? ESCAPE '\\'{meta_where.replace('c.', '')} LIMIT ?""",
                     (like_term, *meta_params, k),
                 ).fetchall()
             conn.close()

@@ -30,9 +30,12 @@ def mineru_parse_pdf(file_or_url: str) -> Dict[str, str]:
     # Download if URL
     if file_or_url.startswith("http://") or file_or_url.startswith("https://"):
         try:
+            from ..urlguard import bounded_read, is_safe_url
+            if not is_safe_url(file_or_url):
+                return {"url": file_or_url, "content": "", "error": "Blocked URL (SSRF guard)"}
             req = urllib.request.Request(file_or_url, headers={"User-Agent": "AutonomousResearchAgent/1.0"})
             with urllib.request.urlopen(req, timeout=15.0) as resp:
-                data = resp.read()
+                data = bounded_read(resp)
             temp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
             temp.write(data)
             temp.close()

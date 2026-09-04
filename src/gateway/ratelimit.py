@@ -28,16 +28,18 @@ class TokenBucket:
         self.capacity = max(1, burst)
         self._tokens = float(self.capacity)
         self._ts = time.monotonic()
+        self._lock = threading.Lock()
 
     def try_consume(self, n: int = 1) -> bool:
-        now = time.monotonic()
-        elapsed = now - self._ts
-        self._tokens = min(self.capacity, self._tokens + elapsed * self.rate_per_sec)
-        self._ts = now
-        if self._tokens >= n:
-            self._tokens -= n
-            return True
-        return False
+        with self._lock:
+            now = time.monotonic()
+            elapsed = now - self._ts
+            self._tokens = min(self.capacity, self._tokens + elapsed * self.rate_per_sec)
+            self._ts = now
+            if self._tokens >= n:
+                self._tokens -= n
+                return True
+            return False
 
     @property
     def tokens(self) -> float:
@@ -75,11 +77,12 @@ class RateLimiter:
 
     def acquire(self, tenant: str, model: str, estimated_tokens: int = 0) -> bool:
         """Check request- and token-rate limits. Returns True if admitted."""
-        if not self.rpm_bucket(tenant, model).try_consume(1):
-            return False
+        # Check TPM first so a token-deny doesn't burn an RPM token.
         if estimated_tokens:
             if not self.tpm_bucket(tenant, model).try_consume(estimated_tokens):
                 return False
+        if not self.rpm_bucket(tenant, model).try_consume(1):
+            return False
         return True
 
     def enter_parallel(self) -> bool:

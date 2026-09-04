@@ -88,6 +88,25 @@ Example: [{{"title": "Introduction", "order": 0}}, ...]"""
     if not isinstance(outline, list):
         outline = [{"title": "Overview", "order": 0}, {"title": "Findings", "order": 1},
                    {"title": "Sources", "order": 2}]
+    # Normalize: the outline LLM sometimes returns bare strings or dicts
+    # without titles — coerce everything to {title, order} so every
+    # downstream s.get/s["title"] is safe.
+    normalized = []
+    for i, s in enumerate(outline):
+        if isinstance(s, dict):
+            title = str(s.get("title") or "").strip()
+            order = s.get("order", i)
+        else:
+            title, order = str(s or "").strip(), i
+        if not title:
+            continue
+        try:
+            order = int(order)
+        except (ValueError, TypeError):
+            order = i
+        normalized.append({"title": title, "order": order})
+    outline = normalized or [{"title": "Overview", "order": 0},
+                             {"title": "Findings", "order": 1}]
 
     # Ensure required deep sections exist
     titles_l = {str(s.get("title", "")).lower() for s in outline}
@@ -155,9 +174,9 @@ def synthesizer_write(state: ResearchState) -> ResearchState:
         return state
 
     body_sections = [(i, s) for i, s in enumerate(outline)
-                     if s["title"].lower() not in ("sources", "references")]
+                     if isinstance(s, dict) and str(s.get("title", "")).lower() not in ("sources", "references")]
     source_sections = [(i, s) for i, s in enumerate(outline)
-                       if s["title"].lower() in ("sources", "references")]
+                       if isinstance(s, dict) and str(s.get("title", "")).lower() in ("sources", "references")]
 
     print(f"\n✍️ [Synthesizer] Writing {len(outline)} sections ({len(body_sections)} in parallel + {len(source_sections)} sources)")
 
@@ -168,12 +187,19 @@ def synthesizer_write(state: ResearchState) -> ResearchState:
         all_urls: list[str] = []
         seen: set[str] = set()
         for c in state.get("retrieved_chunks", []):
+            if not isinstance(c, dict):
+                continue
             url = c.get("url", "")
             if url and url not in seen:
                 all_urls.append(url)
                 seen.add(url)
         for c in state.get("claims", []):
-            for url in c.get("evidence_ids", []):
+            if not isinstance(c, dict):
+                continue
+            evidence_ids = c.get("evidence_ids", [])
+            if isinstance(evidence_ids, str):
+                evidence_ids = [evidence_ids]
+            for url in evidence_ids or []:
                 if url and url not in seen:
                     all_urls.append(url)
                     seen.add(url)
@@ -311,9 +337,18 @@ def _write_parallel_sections(
     state["status"] = f"Writing {len(body_sections)} sections in parallel..."
     print(f"  🚀 Launching {len(body_sections)} parallel section generators...")
 
+    # Thread-locals (cost sink, model pin) are not inherited by workers —
+    # propagate the parent run context so section spend hits the budget.
+    from src.llm import fork_run_context, apply_run_context
+    _parent_ctx = fork_run_context()
+
+    def _write_with_ctx(idx: int, sd: dict, factoids: list):
+        apply_run_context(_parent_ctx)
+        return _write_single_section(state, idx, sd, factoids)
+
     with ThreadPoolExecutor(max_workers=min(len(body_sections), 6)) as executor:
         futures = {
-            executor.submit(_write_single_section, state, idx, sd, factoids): (idx, sd["title"])
+            executor.submit(_write_with_ctx, idx, sd, factoids): (idx, sd.get("title", ""))
             for idx, sd in body_sections
         }
         for future in as_completed(futures):

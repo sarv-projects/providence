@@ -55,10 +55,21 @@ app = FastAPI(
     version="0.3.0"
 )
 
-# Add CORS middleware
+# Add CORS middleware. The Next.js UI proxies /api/* same-origin (see
+# frontend/next.config.js rewrites), so a restrictive default is safe;
+# override with CORS_ALLOW_ORIGINS="*" (or explicit origins, comma-separated)
+# for external dashboards / mobile clients.
+_cors_origins = [
+    o.strip()
+    for o in os.getenv(
+        "CORS_ALLOW_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000",
+    ).split(",")
+    if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -99,6 +110,19 @@ class ResearchRequest(BaseModel):
     max_cost_usd: Optional[float] = None
     max_iterations: Optional[int] = None
     max_tokens: Optional[int] = None
+    # Research lenses: combinable toggles layered over the depth mode.
+    recency: bool = False
+    academic: bool = False
+    compare: bool = False
+
+
+def _request_lenses(request) -> dict:
+    """Extract the {recency, academic, compare} lens mapping from a request."""
+    return {
+        "recency": bool(getattr(request, "recency", False)),
+        "academic": bool(getattr(request, "academic", False)),
+        "compare": bool(getattr(request, "compare", False)),
+    }
 
 
 class ResearchResponse(BaseModel):
@@ -117,6 +141,9 @@ class PlanCreateRequest(BaseModel):
     mode: str = "standard"
     autonomy: str = "L1"
     clarifications: Optional[dict] = None
+    recency: bool = False
+    academic: bool = False
+    compare: bool = False
 
 
 class PlanUpdateRequest(BaseModel):
@@ -133,6 +160,9 @@ class PlanRunRequest(BaseModel):
     max_cost_usd: Optional[float] = None
     max_iterations: Optional[int] = None
     max_tokens: Optional[int] = None
+    recency: bool = False
+    academic: bool = False
+    compare: bool = False
 
 
 class ClarifyRequest(BaseModel):
@@ -348,6 +378,7 @@ async def research(request: ResearchRequest):
                 mode=request.mode,
                 autonomy=autonomy,
                 clarifications=request.clarifications,
+                lenses=_request_lenses(request),
             )
             return {
                 "status": payload.get("status", "draft"),
@@ -376,6 +407,7 @@ async def research(request: ResearchRequest):
                 max_cost_usd=effective_cost,
                 max_iterations_override=effective_iterations,
                 max_tokens=request.max_tokens,
+                lenses=_request_lenses(request),
             )
             job_id = result.get("job_id", "")
             return {
@@ -403,6 +435,7 @@ async def research(request: ResearchRequest):
             max_cost_usd=effective_cost,
             max_iterations_override=effective_iterations,
             max_tokens=request.max_tokens,
+            lenses=_request_lenses(request),
         )
         elapsed = time.time() - start
         after = _metrics_totals(DEFAULT_METRICS.snapshot())
@@ -457,6 +490,7 @@ async def create_plan(request: PlanCreateRequest):
             mode=request.mode,
             autonomy=request.autonomy or "L1",
             clarifications=request.clarifications,
+            lenses=_request_lenses(request),
         )
     except Exception as e:
         raise _http_error(500, e, "Clarification generation")
@@ -517,7 +551,8 @@ async def run_plan(plan_id: str, request: PlanRunRequest = PlanRunRequest()):
     # If still needs clarification and L2, re-generate plan with answers
     if p.needs_clarification and clarifications:
         payload = create_research_plan(
-            p.query, mode=p.mode, autonomy=p.autonomy, clarifications=clarifications
+            p.query, mode=p.mode, autonomy=p.autonomy, clarifications=clarifications,
+            lenses=_request_lenses(request),
         )
         # Keep same flow with new plan_id
         plan_id = payload["plan_id"]
@@ -550,6 +585,7 @@ async def run_plan(plan_id: str, request: PlanRunRequest = PlanRunRequest()):
         max_cost_usd=effective_cost,
         max_iterations_override=effective_iterations,
         max_tokens=request.max_tokens,
+        lenses=_request_lenses(request),
     )
     job_id = result.get("job_id", "")
     if job_id:
@@ -696,6 +732,9 @@ class SettingsModel(BaseModel):
     max_cost: float = 5.0
     max_iterations: int = 3
     default_model: str = "opencode_free/nemotron-3-ultra-free"
+    lens_recency: bool = False
+    lens_academic: bool = False
+    lens_compare: bool = False
 
 
 def _workspace_settings() -> dict:
@@ -738,8 +777,13 @@ async def save_settings(settings: SettingsModel):
     os.makedirs("data", exist_ok=True)
     path = _settings_path()
     payload = settings.model_dump()
-    with open(path, "w") as f:
+    # Atomic write (tmp + os.replace) so concurrent readers never see a
+    # truncated file — readers fall back to {} on corrupt JSON, which would
+    # silently flip defaults mid-run.
+    tmp = f"{path}.tmp.{os.getpid()}"
+    with open(tmp, "w") as f:
         json.dump(payload, f, indent=2)
+    os.replace(tmp, path)
     return {"status": "success", "settings": payload}
 
 
@@ -766,14 +810,18 @@ async def research_progress(job_id: Optional[str] = None):
 @app.get("/api/research/progress/stream")
 async def research_progress_stream(job_id: Optional[str] = None):
     """SSE stream of research progress until finished."""
+    import asyncio
     from src.engine.progress import get_progress, get_progress_by_job
     progress = get_progress_by_job(job_id) if job_id else get_progress()
     if job_id and progress is None:
         raise HTTPException(status_code=404, detail="Progress stream not found")
 
-    def event_gen():
+    async def event_gen():
         last = ""
-        while True:
+        # Bound the stream so a job that never flips `finished` cannot hang
+        # a server worker forever (previously blocking time.sleep in an
+        # async endpoint also stalled the whole event loop).
+        for _ in range(1125):  # ~15 min at 0.8s
             snap = progress.snapshot()
             payload = json.dumps(snap)
             if payload != last:
@@ -781,7 +829,7 @@ async def research_progress_stream(job_id: Optional[str] = None):
                 last = payload
             if snap.get("finished"):
                 break
-            time.sleep(0.8)
+            await asyncio.sleep(0.8)
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 
@@ -864,8 +912,13 @@ async def get_report(name: str):
 
 @app.get("/api/modes")
 async def list_modes():
-    """List configured research modes and quality dials."""
-    from src.engine.modes import load_modes
+    """List configured research modes and quality dials.
+
+    The UI model is Chat / Research(depth=standard|deep) + combinable
+    lenses (recency/academic/compare); the full legacy mode list is kept
+    for backward compatibility.
+    """
+    from src.engine.modes import load_modes, LENSES
     registry = load_modes()
     modes = []
     for name, m in registry.modes.items():
@@ -880,7 +933,17 @@ async def list_modes():
             "academic_bias": m.academic_bias,
             "recency_bias": m.recency_bias,
         })
-    return {"modes": modes, "default": registry.default_mode}
+    return {
+        "modes": modes,
+        "default": registry.default_mode,
+        "depths": ["standard", "deep"],
+        "default_depth": "standard",
+        "lenses": [
+            {"name": "recency", "label": "Recency", "description": "Prefer 2024–2026 sources; append year terms to queries"},
+            {"name": "academic", "label": "Academic", "description": "Papers-first: wider arXiv pass + peer-review outline guidance"},
+            {"name": "compare", "label": "Compare", "description": "Structured output: criteria, option deep-dives, comparison matrix"},
+        ],
+    }
 
 
 @app.get("/api/providers/catalog")

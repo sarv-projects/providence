@@ -219,6 +219,12 @@ class Gateway:
             raise AllRoutesFailed(
                 f"All {len(routes)} route(s) failed; last error: {last_error}"
             ) from last_error
+        except GeneratorExit:
+            # Caller abandoned the stream (break/GC): GeneratorExit is NOT an
+            # Exception subclass, so it bypasses `except Exception` — release
+            # the quota hold explicitly before propagating.
+            self.km.release_reservation(reservation)
+            raise
         except Exception:
             # Failure path: no charge happened — return the quota hold.
             self.km.release_reservation(reservation)

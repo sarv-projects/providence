@@ -57,7 +57,10 @@ modes:
     vault_rag: true
     allow_tools: true
 
-  # ── Recency ──
+  # ── Recency / Academic / Compare ──
+  # LEGACY aliases: the UI now exposes these as combinable lens toggles on
+  # top of standard/deep (see src/engine/modes.py LEGACY_LENS_MODES).
+  # Entries remain so old --mode values and API callers keep working.
   recency:
     description: "Last-N-days style research"
     budgets:

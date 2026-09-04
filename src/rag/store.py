@@ -97,7 +97,11 @@ class VectorStore:
             if len(embedding) < self.vector_dim:
                 embedding = embedding + [0.0] * (self.vector_dim - len(embedding))
             embedding = embedding[:self.vector_dim]
-            results = self._qdrant.query(embedding, k=k)
+            # Qdrant backend filters server-side on run_id — previously the
+            # filters were dropped here and other runs' chunks leaked in.
+            results = self._qdrant.query(
+                embedding, k=k, run_id=str((filters or {}).get("run_id") or "")
+            )
         elif self._lancedb and embedding:
             # Pad or truncate embedding to match store dimension
             if len(embedding) < self.vector_dim:

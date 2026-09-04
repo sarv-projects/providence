@@ -104,14 +104,14 @@ export function ProviderSettings({ providers, onProvidersChange }: ProviderSetti
           <button type="button" className="secondary-button" onClick={() => setShowForm(!showForm)}><Plus size={15} /> Add BYOK provider</button>
           {showForm && (
             <form onSubmit={addProvider} className="provider-form">
-              <select value={selectedProvider} onChange={(e) => { setSelectedProvider(e.target.value); const provider = presets.find((item) => item.id === e.target.value); if (provider) { setName(provider.name); setUrl(provider.base_url); setModels('') } }}>
+              <select value={selectedProvider} onChange={(e) => { setSelectedProvider(e.target.value); const provider = presets.find((item) => item.id === e.target.value); if (provider) { setName(provider.name); setUrl(provider.base_url); setModels('') } setKey('') }}>
                 <option value="">Select a provider preset or use custom</option>
                 {presets.filter((provider) => provider.requires_key).map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
                 <option value="custom">Custom OpenAI-compatible provider</option>
               </select>
               <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Provider name" required />
               <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://api.example.com/v1" required />
-              <input value={key} onChange={(e) => setKey(e.target.value)} placeholder="API key" type="password" required />
+              <input value={key} onChange={(e) => setKey(e.target.value)} placeholder="API key (leave blank for keyless local providers)" type="password" />
               <input value={models} onChange={(e) => setModels(e.target.value)} placeholder="Model IDs, comma-separated" />
               <button type="submit" className="primary-button">Connect provider</button>
             </form>

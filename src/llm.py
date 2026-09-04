@@ -78,6 +78,28 @@ def clear_run_request_context() -> None:
     _run_ctx.max_tokens_override = None
 
 
+def fork_run_context() -> dict:
+    """Snapshot the current thread's run context for worker threads.
+
+    ``threading.local`` is not inherited by ThreadPoolExecutor workers, so
+    parallel agents (triangulator, synthesizer) previously lost the per-run
+    cost sink + model pin — their LLM spend went uncounted. Capture with
+    this in the parent and re-install via :func:`apply_run_context`.
+    """
+    return {
+        "cost_sink": getattr(_run_ctx, "cost_sink", None),
+        "model_override": getattr(_run_ctx, "model_override", None),
+        "max_tokens_override": getattr(_run_ctx, "max_tokens_override", None),
+    }
+
+
+def apply_run_context(ctx: dict) -> None:
+    """Install a forked run context on the current (worker) thread."""
+    _run_ctx.cost_sink = (ctx or {}).get("cost_sink")
+    _run_ctx.model_override = (ctx or {}).get("model_override")
+    _run_ctx.max_tokens_override = (ctx or {}).get("max_tokens_override")
+
+
 def _notify_run_cost_sink(res) -> None:
     """Best-effort notification of the thread's cost sink (never raises)."""
     sink = getattr(_run_ctx, "cost_sink", None)
@@ -98,14 +120,17 @@ def _notify_run_cost_sink(res) -> None:
 def _get_gateway():
     global _gateway
     if _gateway is None:
-        _gateway = build_gateway_from_env()
+        with _gateway_lock:
+            if _gateway is None:
+                _gateway = build_gateway_from_env()
     return _gateway
 
 
 def reset_gateway() -> None:
     """Reset the gateway singleton (useful for testing)."""
     global _gateway
-    _gateway = None
+_gateway = None
+_gateway_lock = threading.Lock()
 
 
 def gateway_info() -> dict:

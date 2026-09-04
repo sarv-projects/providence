@@ -57,6 +57,8 @@ export function ModelMenu({ selected, onSelect, providers, loading, disabled }: 
     : flat
 
   const current = flat.find((row) => row.value === selected)
+  const fallbackLabel = selected ? selected.split('/').pop() || selected : ''
+  const fallbackProvider = selected?.includes('/') ? selected.split('/')[0] : ''
 
   useEffect(() => {
     if (!open) return
@@ -93,8 +95,8 @@ export function ModelMenu({ selected, onSelect, providers, loading, disabled }: 
         className="model-menu-trigger"
         title="Choose a model"
       >
-        <span className="model-menu-current">{loading ? 'Loading…' : current ? current.label : 'No free models'}</span>
-        <span className="model-menu-provider">{current ? current.provider : ''}</span>
+        <span className="model-menu-current">{loading ? 'Loading…' : current ? current.label : fallbackLabel || 'No free models'}</span>
+        <span className="model-menu-provider">{current ? current.provider : fallbackProvider}</span>
         <ChevronDown size={14} className="model-menu-chevron" />
       </button>
 

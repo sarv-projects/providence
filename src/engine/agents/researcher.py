@@ -215,23 +215,33 @@ def researcher_gather(state: ResearchState) -> ResearchState:
             print(f"  📰 Newswire: already fetched {len(state.get('news_hits') or [])} hits — skipping")
 
 
-    # Deep/academic: one Exa arXiv pass only (skip slow/flaky mineru when Exa works)
+    # Deep/academic: one Exa arXiv pass only (skip slow/flaky mineru when Exa works).
+    # The academic lens widens the pass (more results + a survey-oriented
+    # query) so the toggle is meaningful on depths that already force arXiv.
     if flags.get("academic_bias") or flags.get("force_arxiv"):
+        arxiv_k = min(10 if flags.get("academic_bias") else 6, max_results)
         if os.getenv("EXA_API_KEY"):
             try:
                 from src.tools.adapters.exa import exa_search
                 aq = f"{state['query'][:120]} site:arxiv.org"
-                extra = exa_search(aq, max_results=min(6, max_results))
+                extra = exa_search(aq, max_results=arxiv_k)
                 if extra:
                     print(f"  Exa arXiv: +{len(extra)} hits")
                     results = list(results) + extra
                     record_tool_calls(state, n=1)
+                if flags.get("academic_bias"):
+                    aq2 = f"{state['query'][:100]} site:arxiv.org survey review"
+                    extra2 = exa_search(aq2, max_results=min(5, max_results))
+                    if extra2:
+                        print(f"  Exa arXiv survey: +{len(extra2)} hits")
+                        results = list(results) + extra2
+                        record_tool_calls(state, n=1)
             except Exception as e:
                 print(f"  Exa arXiv skipped: {e}")
         else:
             try:
                 from src.tools.adapters.mineru import mineru_search
-                arxiv = mineru_search(state["query"], max_results=min(5, max_results))
+                arxiv = mineru_search(state["query"], max_results=min(8 if flags.get("academic_bias") else 5, max_results))
                 if arxiv:
                     print(f"  Academic: +{len(arxiv)} arXiv hits")
                     results = list(results) + arxiv
@@ -587,12 +597,14 @@ Return a JSON object with:
     if not analysis:
         analysis = {"findings": [content_text[:500]], "claims": [], "gaps": [], "confidence": "low"}
 
-    findings = analysis.get("findings", [])
-    gaps = analysis.get("gaps", [])
-    claims = analysis.get("claims", [])
+    findings = [f for f in (analysis.get("findings", []) or []) if isinstance(f, str) and f.strip()]
+    gaps = [g for g in (analysis.get("gaps", []) or []) if isinstance(g, str) and g.strip()]
+    claims = [c for c in (analysis.get("claims", []) or []) if isinstance(c, dict)]
 
     # Merge findings
-    existing = set(state.get("findings", []))
+    existing = set(f for f in (state.get("findings") or []) if isinstance(f, str))
+    if not isinstance(state.get("findings"), list):
+        state["findings"] = []
     for f in findings:
         if f not in existing:
             state["findings"].append(f)
@@ -602,9 +614,9 @@ Return a JSON object with:
     # Bind each new finding to the plan section it best serves (mechanical
     # keyword overlap on section titles). Lets the critic see per-section
     # coverage and kills cross-section contamination in later steps.
-    section_titles = [str(s.get("title") or "") for s in (state.get("outline") or [])]
+    section_titles = [str((s.get("title") if isinstance(s, dict) else s) or "") for s in (state.get("outline") or [])]
     task_ids = [
-        str(s.get("task_id") or f"T{i+1}")
+        str((s.get("task_id") if isinstance(s, dict) else "") or f"T{i+1}")
         for i, s in enumerate(state.get("outline") or [])
     ]
     ledger = list(state.get("task_ledger") or [])
@@ -639,10 +651,14 @@ Return a JSON object with:
         if u and (p.get("content") or ""):
             known_urls.add(u)
     for c in state.get("run_corpus") or []:
-        u = canonical_url(c.get("url") or "")
+        u = canonical_url(c.get("url") or "") if isinstance(c, dict) else ""
         if u and (c.get("text") or c.get("content") or ""):
             known_urls.add(u)
+    if not isinstance(state.get("evidence_map"), dict):
+        state["evidence_map"] = {}
     for c in claims:
+        if not isinstance(c, dict):
+            continue
         evidence = c.get("evidence") or []
         if isinstance(evidence, dict):
             evidence = [evidence]

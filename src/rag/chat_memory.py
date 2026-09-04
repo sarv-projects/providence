@@ -129,7 +129,9 @@ class ChatMemory:
             messages.append({"role": "system", "content": system_prompt})
 
         for m in self.messages:
-            messages.append({"role": m["role"], "content": m["content"]})
+            if not isinstance(m, dict):
+                continue
+            messages.append({"role": m.get("role", "user"), "content": m.get("content", "")})
 
         return messages
 
@@ -158,9 +160,22 @@ class ChatMemory:
         try:
             with open(self.persist_path, "r") as f:
                 data = json.load(f)
-                self.messages = data.get("messages", [])[-self.window_size:]
-                self.summary = data.get("summary", "")
-        except (json.JSONDecodeError, FileNotFoundError):
+                if not isinstance(data, dict):
+                    raise ValueError("chat memory root must be an object")
+                raw_messages = data.get("messages", [])
+                if not isinstance(raw_messages, list):
+                    raw_messages = []
+                self.messages = [
+                    {"role": str(m.get("role", "user")), "content": str(m.get("content", ""))}
+                    for m in raw_messages
+                    if isinstance(m, dict)
+                ][-self.window_size:] if self.window_size > 0 else [
+                    {"role": str(m.get("role", "user")), "content": str(m.get("content", ""))}
+                    for m in raw_messages
+                    if isinstance(m, dict)
+                ]
+                self.summary = str(data.get("summary", "") or "")
+        except (json.JSONDecodeError, FileNotFoundError, ValueError, UnicodeDecodeError, OSError):
             # Back up the corrupt file instead of silently overwriting it.
             try:
                 backup = self.persist_path + f".corrupt.{int(time.time())}"

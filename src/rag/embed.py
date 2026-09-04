@@ -95,12 +95,25 @@ class OpenAIEmbedder(Embedder):
             # Batch API call
             remaining = [t for _, t in uncached]
             vecs = self._call_batch_api(remaining)
+            # Defensive: provider must return one vector per input in order.
+            # Fill gaps individually rather than misaligning embeddings.
+            pending: list[tuple[int, list[float]]] = []
             for idx, (orig_idx, _) in enumerate(uncached):
-                vec = vecs[idx]
-                results.append((orig_idx, vec))
-                cache_key = hashlib.sha256(texts[orig_idx].encode()).hexdigest()
-                with self._lock:
-                    self._cache[cache_key] = vec
+                if idx < len(vecs):
+                    pending.append((orig_idx, vecs[idx]))
+            with self._lock:
+                for orig_idx, vec in pending:
+                    results.append((orig_idx, vec))
+                    cache_key = hashlib.sha256(texts[orig_idx].encode()).hexdigest()
+                    if cache_key not in self._cache:
+                        self._cache[cache_key] = vec
+                        self._cache_order.append(cache_key)
+                while len(self._cache_order) > self._cache_size:
+                    old = self._cache_order.pop(0)
+                    self._cache.pop(old, None)
+            missing = [t for i, t in uncached if i >= len(vecs)]
+            for orig_idx, text in missing:
+                results.append((orig_idx, self.embed(text)))
 
         results.sort(key=lambda x: x[0])
         return [v for _, v in results]
@@ -139,9 +152,25 @@ class OpenAIEmbedder(Embedder):
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 body = json.loads(resp.read().decode())
-                vecs = []
-                for item in body["data"]:
-                    vecs.append([float(v) for v in item["embedding"]])
+                items = body["data"]
+                # Map by the API's `index` field when present — never assume
+                # response order matches request order.
+                by_index: dict[int, list[float]] = {}
+                ordered: list[list[float]] = []
+                for item in items:
+                    if isinstance(item, dict) and "index" in item:
+                        try:
+                            by_index[int(item["index"])] = [float(v) for v in item["embedding"]]
+                        except (ValueError, TypeError):
+                            continue
+                    else:
+                        ordered.append([float(v) for v in item["embedding"]])
+                if by_index and len(by_index) == len(texts):
+                    vecs = [by_index[i] for i in range(len(texts))]
+                else:
+                    vecs = ordered if len(ordered) == len(texts) else [
+                        [float(v) for v in item["embedding"]] for item in items
+                    ]
                 self._request_count += len(texts)
                 return vecs
         except Exception as e:

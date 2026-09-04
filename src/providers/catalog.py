@@ -42,14 +42,56 @@ _MODELS_ENDPOINTS = {
     "deepseek": "https://api.deepseek.com/v1/models",
 }
 
-_DISCOVERY_TTL_S = 1800.0  # 30 min
+_DISCOVERY_TTL_S = 1800.0  # default; override with PROVIDENCE_DISCOVERY_TTL_S (0 = always fetch)
+try:
+    _DISCOVERY_TTL_S = float(os.getenv("PROVIDENCE_DISCOVERY_TTL_S", "120") or 120)
+except ValueError:
+    _DISCOVERY_TTL_S = 120.0
 _DISCOVERY_TIMEOUT_S = 10.0
 _MAX_DISCOVERED_MODELS = 80
+
+# ---------------------------------------------------------------------------
+# Dead-model filter (provider lists IDs that no longer serve traffic).
+#
+# Listing on GET /models does NOT mean an ID works: e.g. Zen still lists
+# ``deepseek-v4-flash-free`` but completions fail. IDs matching these
+# patterns are dropped from slot models AND tier routes so dead models can
+# never enter the gateway failover chain or the free-model picker.
+# Add a new regex here when a model dies — no other change needed.
+# ---------------------------------------------------------------------------
+import re as _re
+
+DEAD_MODEL_PATTERNS = [
+    _re.compile(r"deepseek-v4-flash-free", _re.IGNORECASE),
+    # Absent from the official free list (docs, Sep 2026) + consistent 503.
+    _re.compile(r"laguna-s-2\.1-free", _re.IGNORECASE),
+]
+
+
+def is_dead_model(model_id: str) -> bool:
+    """True if a model ID matches a known-dead pattern."""
+    m = model_id or ""
+    return any(p.search(m) for p in DEAD_MODEL_PATTERNS)
 
 import json as _json
 import threading as _threading
 import time as _time
 import urllib.request as _urlreq
+import uuid as _uuid
+
+
+def _zen_headers() -> dict:
+    """Official-client identity headers for Zen (see gateway/providers.py).
+
+    Discovery GETs without them share the anonymous throttle bucket.
+    """
+    return {
+        "User-Agent": "opencode/latest/1.3.15/cli",
+        "x-opencode-client": "cli",
+        "x-opencode-session": _uuid.uuid4().hex,
+        "x-opencode-project": _uuid.uuid4().hex,
+        "x-opencode-request": f"req-{_uuid.uuid4().hex[:12]}",
+    }
 
 _disc_cache: dict[str, tuple[float, list[str]]] = {}
 _disc_lock = _threading.Lock()
@@ -61,6 +103,8 @@ def _fetch_model_ids(provider_key: str, api_key: str) -> list[str]:
     if not url:
         return []
     headers = {"User-Agent": "AutonomousResearchAgent/1.0", "Accept": "application/json"}
+    if "opencode.ai" in url:
+        headers.update(_zen_headers())
     # Zen free needs no key; everything else requires one
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -245,11 +289,16 @@ def load_catalog(config_path: Optional[str] = None) -> CatalogConfig:
                 seen: set[str] = set()
                 merged: list[str] = []
                 for m in list(slot.models) + remote:
-                    if m and m not in seen:
+                    if m and m not in seen and not is_dead_model(m):
                         seen.add(m)
                         merged.append(m)
                 slot.models = merged
                 slot._discovered_ok = True
+
+    # Dead-model purge applies even with discovery disabled/offline: a dead
+    # ID hardcoded in YAML must never reach tiers or the picker.
+    for slot in cat.providers.values():
+        slot.models = [m for m in slot.models if m and not is_dead_model(m)]
 
     # Parse tiers
     tiers_raw = raw.get("tiers", {})
@@ -297,6 +346,8 @@ def load_catalog(config_path: Optional[str] = None) -> CatalogConfig:
                 pair = (provider_name, model)
                 if pair in seen_pairs:
                     continue
+                if is_dead_model(model):
+                    continue
                 if "free" in model.lower() or model == "big-pickle":
                     seen_pairs.add(pair)
                     validated.append(TierRoute(provider_name, model, len(validated) + 1))
@@ -333,7 +384,7 @@ def _ensure_fallback(cat: CatalogConfig) -> None:
         # Offline fallback only — load_catalog() refreshes these live via
         # GET /zen/v1/models when the network is available.
         models=["nemotron-3-ultra-free", "nemotron-3.5-lightning-free",
-                "deepseek-v4-flash-free", "big-pickle"],
+                "muse-spark-1.3-contributor-free", "big-pickle"],
         is_default=True,
     )
     cat.providers["opencode_free"] = zen

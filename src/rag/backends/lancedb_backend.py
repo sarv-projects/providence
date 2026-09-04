@@ -117,7 +117,7 @@ class LanceDBStore:
         # Remove existing chunks with same IDs before inserting
         chunk_ids = [r["id"] for r in rows]
         try:
-            id_list = ", ".join(f"'{cid}'" for cid in chunk_ids)
+            id_list = ", ".join(f"'{str(cid).replace(chr(39), chr(39)*2)}'" for cid in chunk_ids)
             table.delete(f"id IN ({id_list})")
         except Exception:
             logging.getLogger(__name__).debug("ignored error", exc_info=True)
@@ -150,14 +150,21 @@ class LanceDBStore:
                     try:
                         search = search.where(" AND ".join(clauses))
                     except Exception as e:
-                        # Column missing / unsupported where — proceed without
-                        # the filter, but log it (previously silent).
+                        # Column missing / unsupported where. Fail CLOSED when
+                        # isolation filters (run_id/acl) were requested —
+                        # returning unfiltered rows would leak other runs'
+                        # chunks. Otherwise proceed unfiltered.
                         logging.getLogger(__name__).debug(
                             "LanceDB filter dropped (clauses=%s): %s", clauses, e
                         )
+                        if filters.get("run_id") is not None or filters.get("acl") is not None:
+                            return []
             results = search.to_list()
 
-            # Remove vector from results to keep them light
+            # Remove vector from results to keep them light.
+            # LanceDB returns _distance (smaller = closer); negate to a
+            # similarity score (larger = better) so hybrid RRF blending,
+            # which sorts descending, ranks the closest chunks first.
             return [
                 {
                     "id": r.get("id", ""),
@@ -170,7 +177,7 @@ class LanceDBStore:
                     "run_id": r.get("run_id", ""),
                     "parent_id": r.get("parent_id", ""),
                     "parent_text": r.get("parent_text", ""),
-                    "score": r.get("_distance", 1.0),
+                    "score": -(r.get("_distance", 1.0) or 0.0),
                 }
                 for r in results
             ]
@@ -183,7 +190,8 @@ class LanceDBStore:
             return
         table = self._db.open_table(self._table_name)
         try:
-            table.delete(f"run_id = '{run_id}'")
+            safe = str(run_id).replace("'", "''")
+            table.delete(f"run_id = '{safe}'")
         except Exception:
             logging.getLogger(__name__).debug("ignored error", exc_info=True)
 

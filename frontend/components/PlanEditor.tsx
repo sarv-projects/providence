@@ -56,9 +56,13 @@ export function PlanEditor({ plan, onApprove, onCancel, busy }: PlanEditorProps)
     const queries = plan.search_queries || plan.plan?.search_queries || []
     setOutlineText(outline.join('\n'))
     setQueriesText(queries.join('\n'))
+    setAnswers({})
   }, [plan])
 
   const questions = plan.clarifying_questions || []
+  const outlineCount = outlineText.split('\n').map((t) => t.trim()).filter(Boolean).length
+  const queriesCount = queriesText.split('\n').map((t) => t.trim()).filter(Boolean).length
+  const canApprove = !busy && outlineCount > 0 && queriesCount > 0
 
   const handleApprove = () => {
     const outline = outlineText
@@ -133,8 +137,14 @@ export function PlanEditor({ plan, onApprove, onCancel, busy }: PlanEditorProps)
         <button type="button" onClick={onCancel} disabled={busy} className="ghost-button">
           <XCircle size={14} /> Cancel
         </button>
-        <button type="button" onClick={handleApprove} disabled={busy} className="primary-button">
-          <CheckCircle size={14} /> {busy ? 'Starting…' : 'Approve & research'}
+        <button
+          type="button"
+          onClick={handleApprove}
+          disabled={!canApprove}
+          title={canApprove ? 'Approve plan' : 'Add at least one outline section and one search query'}
+          className="primary-button"
+        >
+          <CheckCircle size={14} /> {busy ? 'Starting…' : `Approve & research${outlineCount || queriesCount ? ` (${outlineCount} sections · ${queriesCount} queries)` : ''}`}
         </button>
       </div>
     </div>

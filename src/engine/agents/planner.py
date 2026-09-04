@@ -128,7 +128,7 @@ def planner(state: ResearchState) -> ResearchState:
         get_progress().think("next", "Decomposing query into research plan")
     except Exception:
         logging.getLogger(__name__).debug("ignored error", exc_info=True)
-    print(f"\n🧠 [Planner] Analyzing query: {state['query'][:80]}")
+    print(f"\n🧠 [Planner] Analyzing query: {(state.get('query') or '')[:80]}")
 
     # ── Query-type classification (Anthropic) → drives plan shape + budgets ──
     qtype = classify_query_type(state.get("query", ""), mode=state.get("mode", ""))
@@ -156,6 +156,22 @@ Search queries should target each option and direct comparisons (A vs B).
 DEEP mode: outline should name real systems/papers where possible, and include
 Evaluation Matrix + Failure-Mode Taxonomy sections before Sources.
 """
+    lens_extra = ""
+    if flags.get("academic_bias") and not deep:
+        lens_extra += """
+ACADEMIC lens: prioritize peer-reviewed papers — outline should name key
+papers/systems where possible and include an Evaluation Matrix before Sources.
+"""
+    if flags.get("recency_bias"):
+        lens_extra += """
+RECENCY lens: prioritize 2024-2026 sources — outline should include a
+"Latest developments" angle and search queries must keep their year terms.
+"""
+    if flags.get("structured_output") and not structured:
+        lens_extra += """
+COMPARE lens: outline MUST include Criteria / Option deep-dives /
+head-to-head Comparison Matrix / Recommendation before Sources.
+"""
     clarif = ""
     if state.get("clarifications"):
         clarif = f"\nUser clarifications: {json.dumps(state.get('clarifications'))}\n"
@@ -182,10 +198,10 @@ REQUIRE: include Evaluation Matrix and Failure-Mode Taxonomy for deep/academic m
     budget_line = budget_status_line(state)
     prompt = f"""Analyze this research query and create a structured plan.
 
-Query: "{state['query']}"
+Query: "{state.get('query', '')}"
 {budget_line}
 {type_extra}
-{clarif}{scout_extra}{compare_extra}{deep_extra}
+{clarif}{scout_extra}{compare_extra}{deep_extra}{lens_extra}
 Return a JSON object with:
   - "topic": main topic (string)
   - "subtopics": 3-5 key subtopics to investigate (list of strings)

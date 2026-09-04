@@ -158,15 +158,26 @@ class Vault:
                 if existing:
                     existing_queries = json.loads(existing[2] or "[]")
                     merged_queries = list(set(existing_queries + (queries or [])))
+                    # Preserve good data: only overwrite snippet/title/topics
+                    # when the new row actually carries content, and never
+                    # demote an established quality score with a lower one
+                    # (re-storing a URL with a bare score must not clobber a
+                    # 9.0 peer-reviewed entry down to 1.5).
                     conn.execute(
                         """UPDATE sources SET
-                            title = ?, snippet = ?, full_text = CASE WHEN ? = '' THEN full_text ELSE ? END,
-                            source_type = ?, acl = ?, version = ?, quality_score = ?,
+                            title = CASE WHEN ? = '' THEN title ELSE ? END,
+                            snippet = CASE WHEN ? = '' THEN snippet ELSE ? END,
+                            full_text = CASE WHEN ? = '' THEN full_text ELSE ? END,
+                            source_type = ?, acl = ?, version = ?,
+                            quality_score = CASE WHEN ? > quality_score THEN ? ELSE quality_score END,
                             last_seen = ?, seen_count = seen_count + 1,
-                            topics = ?, search_queries = ?
-                           WHERE url = ?""",
-                        (title, snippet, full_text, full_text, source_type, acl, version,
-                         quality, now, topics, json.dumps(merged_queries), url),
+                            topics = CASE WHEN ? = '[]' THEN topics ELSE ? END,
+                            search_queries = ?
+                            WHERE url = ?""",
+                        (title, title, snippet, snippet, full_text, full_text,
+                         source_type, acl, version,
+                         quality, quality, now, topics, topics,
+                         json.dumps(merged_queries), url),
                     )
                 else:
                     conn.execute(
@@ -256,6 +267,11 @@ class Vault:
             fts_terms = [
                 t for t in re.split(r"[^a-zA-Z0-9]+", fts_q) if len(t) > 2
             ][:8]
+            if not fts_terms:
+                # Empty / punctuation-only query: the LIKE fallback ('%%')
+                # would dump arbitrary vault rows. Return [] instead.
+                conn.close()
+                return []
             match_clause = (
                 " AND ".join(f'"{t}"' for t in fts_terms) if fts_terms else f'"{fts_q}"'
             )

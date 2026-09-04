@@ -12,11 +12,13 @@ Writing and extraction use OpenCode Zen free (`fast` / `strong`). Thinking uses 
 - Web — Next.js 14 (`frontend/`) + FastAPI (`src/web/`)
 - Ops dashboard — `uv run python -m src.dashboard` (see [GATEWAY.md](GATEWAY.md))
 
-Modes: `chat` · `quick` · `standard` · `deep` · `recency` · `academic` · `compare` · `ultra-long`  
+Modes: `chat` · research depth `standard` · `deep` (+ legacy `quick`, `ultra-long`)
+Lenses (combinable toggles): `recency` · `academic` · `compare`
+(legacy `--mode recency|academic|compare` resolve to `standard` + their lens)
 Quality dials (from `config/modes.yaml`): ultra-fast · balanced · accurate · comprehensive  
 Autonomy: L1 (run) · L2 (approve plan) · L3 (unattended, tighter $)
 
-Thinker hops after scout run only when the mode’s dial has `thinker_enabled` (`deep`, `academic`, `ultra-long`). Scout always runs and uses Gemini if `GEMINI_API_KEY` is set.
+Thinker hops after scout run only when the mode's dial has `thinker_enabled` (`deep`, `ultra-long`, legacy `academic` → deep). Scout always runs and uses Gemini if `GEMINI_API_KEY` is set.
 
 ---
 

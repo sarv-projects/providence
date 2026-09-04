@@ -20,6 +20,23 @@ import urllib.request
 HEADERS = {"User-Agent": "AutonomousResearchAgent/1.0 (+https://github.com)"}
 
 
+def _unwrap_ddg_url(href: str) -> str:
+    """Decode DuckDuckGo redirect links (//duckduckgo.com/l/?uddg=<target>).
+
+    Without this the bus stores DDG redirect URLs and extraction fetches
+    duckduckgo.com instead of the real article.
+    """
+    try:
+        if "duckduckgo.com/l/" in href:
+            qs = urllib.parse.parse_qs(urllib.parse.urlsplit(href).query)
+            target = (qs.get("uddg") or [""])[0]
+            if target:
+                return urllib.parse.unquote(target)
+    except Exception:
+        pass
+    return href
+
+
 def _trafilatura():
     """Lazy trafilatura import — importing it at module level made the whole
     adapters package (and everything importing it) fail when the dependency
@@ -32,9 +49,16 @@ def scrape_url(url: str) -> dict:
     """Extract clean markdown from a URL using trafilatura.
 
     Works on any HTML page — zero config, no API key, no Docker.
+    URLs failing the SSRF guard are refused.
     """
     if not url:
         return {}
+    try:
+        from ..urlguard import is_safe_url
+        if not is_safe_url(url):
+            return {}
+    except ImportError:
+        pass
     try:
         t = _trafilatura()
         downloaded = t.fetch_url(url)
@@ -134,7 +158,7 @@ def builtin_search(query: str, max_results: int = 5) -> list[dict]:
                 if tag == "a" and self._in_link:
                     self._in_link = False
                     if self._current.get("title") and self._link_url:
-                        self._current["url"] = self._link_url
+                        self._current["url"] = _unwrap_ddg_url(self._link_url)
                         self.results.append(self._current)
                     self._current = {}
                 elif tag == "a" and self._in_snippet:

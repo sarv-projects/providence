@@ -173,7 +173,13 @@ def retrieve_chunks(
 
     # Over-fetch heavily when isolating so current-run chunks survive filtering
     fetch_k = k * 20 if run_id else k
-    results = store.query(text=query, embedding=embedding, k=fetch_k, filters=filters)
+    # Push run_id into backend filters so Qdrant/LanceDB scope server-side —
+    # previously only the Python post-filter isolated runs, and backends
+    # without filter support (Qdrant) returned other runs' chunks.
+    effective_filters = dict(filters or {})
+    if run_id and "run_id" not in effective_filters:
+        effective_filters["run_id"] = run_id
+    results = store.query(text=query, embedding=embedding, k=fetch_k, filters=effective_filters or None)
 
     if run_id:
         filtered = [r for r in results if r.get("run_id") == run_id]

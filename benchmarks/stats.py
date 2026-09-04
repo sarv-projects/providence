@@ -34,7 +34,7 @@ def main():
     print(f"avg unique domains: {statistics.mean(doms):.1f}")
     print(f"avg chars: {statistics.mean(chars):.0f}")
 
-    ckpts, faccs, greys, reds = [], [], [], []
+    ckpts, faccs, greys, yellows, reds = [], [], [], [], []
     print(f"\n{'T':>3} {'topic':<48} {'ckpt':>5} {'fact':>5} {'G/Y/R':>8} {'grade':>6}")
     for r in rows:
         lg = r["log"]
@@ -54,17 +54,18 @@ def main():
                 red += 1
         tot = max(g + y + red, 1)
         fa = (g + 0.5 * y) / tot
-        ckpts.append(ck); faccs.append(fa); greys.append(g); reds.append(red)
+        ckpts.append(ck); faccs.append(fa); greys.append(g); yellows.append(y); reds.append(red)
         grd = grade(0.5 * ck + 0.5 * fa)
         print(f"{int(lg['topic_id']):>3} {lg['topic'][:48]:48s} {ck:.2f} {fa:.2f} {g}/{y}/{red:>2} {grd}")
 
     print(f"\navg checkpoint: {statistics.mean(ckpts):.2f}")
     print(f"avg fact acc:   {statistics.mean(faccs):.2f}")
     print(f"avg overall:    {statistics.mean([0.5*c+0.5*f for c, f in zip(ckpts, faccs)]):.2f}")
-    print(f"facts: green={sum(greys)} yellow={sum(1 for _ in range(0))} red={sum(reds)}")
+    print(f"facts: green={sum(greys)} yellow={sum(yellows)} red={sum(reds)}")
     print(f"grades: {len([1 for _ in ckpts])} topics | A={sum(1 for c,f in zip(ckpts,faccs) if grade(0.5*c+0.5*f)=='A')} "
           f"B={sum(1 for c,f in zip(ckpts,faccs) if grade(0.5*c+0.5*f)=='B')} "
-          f"C={sum(1 for c,f in zip(ckpts,faccs) if grade(0.5*c+0.5*f)=='C')}")
+          f"C={sum(1 for c,f in zip(ckpts,faccs) if grade(0.5*c+0.5*f)=='C')} "
+          f"D={sum(1 for c,f in zip(ckpts,faccs) if grade(0.5*c+0.5*f)=='D')}")
 
 if __name__ == "__main__":
     main()

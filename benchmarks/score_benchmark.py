@@ -77,6 +77,12 @@ def fact_status(report_lower: str, report_nums: list[float], fact: dict) -> tupl
                 hits.append((tok, "close"))
                 continue
         if _norm(t) in report_lower or t.lower() in report_lower:
+            # Guard against stopword inflation: single/short tokens like
+            # "not"/"no" substring-match nearly every report ("know",
+            # "note", "innovation") and auto-GREEN the fact. Numeric tokens
+            # are still scored via the tolerance path above.
+            if not m and len(t.strip()) < 3:
+                continue
             hits.append((tok, "exact"))
     if any(h[1] == "exact" for h in hits):
         return "GREEN", [h[0] for h in hits]

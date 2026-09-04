@@ -1,11 +1,25 @@
 'use client'
 
 import { Send, ChevronDown } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { apiGet } from '@/lib/api'
 import { ModelMenu, type CatalogProvider } from './ModelMenu'
 
 export type ComposerMode = 'chat' | 'research'
+export type ResearchDepth = 'standard' | 'deep'
+export interface ResearchLenses {
+  recency: boolean
+  academic: boolean
+  compare: boolean
+}
+
+export const EMPTY_LENSES: ResearchLenses = { recency: false, academic: false, compare: false }
+
+const LENS_META: { key: keyof ResearchLenses; label: string; hint: string }[] = [
+  { key: 'recency', label: 'Recency', hint: 'Prefer 2024–2026 sources' },
+  { key: 'academic', label: 'Academic', hint: 'Papers-first, wider arXiv pass' },
+  { key: 'compare', label: 'Compare', hint: 'Structured comparison matrix' },
+]
 
 interface ChatComposerProps {
   input: string
@@ -14,8 +28,10 @@ interface ChatComposerProps {
   disabled?: boolean
   mode: ComposerMode
   onModeChange: (mode: ComposerMode) => void
-  researchMode: string
-  onResearchModeChange: (mode: string) => void
+  researchDepth: ResearchDepth
+  onResearchDepthChange: (depth: ResearchDepth) => void
+  lenses: ResearchLenses
+  onLensesChange: (lenses: ResearchLenses) => void
   autonomy: string
   onAutonomyChange: (level: string) => void
   planFirst: boolean
@@ -32,8 +48,10 @@ export function ChatComposer({
   disabled = false,
   mode,
   onModeChange,
-  researchMode,
-  onResearchModeChange,
+  researchDepth,
+  onResearchDepthChange,
+  lenses,
+  onLensesChange,
   autonomy,
   onAutonomyChange,
   planFirst,
@@ -43,6 +61,14 @@ export function ChatComposer({
 }: ChatComposerProps) {
   const [modelGroups, setModelGroups] = useState<CatalogProvider[]>([])
   const [modelsLoading, setModelsLoading] = useState(true)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  useEffect(() => {
+    const el = textareaRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, 300)}px`
+  }, [input])
 
   useEffect(() => {
     apiGet<{ providers?: CatalogProvider[]; default_provider?: string; default_model?: string }>('/api/providers/catalog?discover=true')
@@ -62,6 +88,7 @@ export function ChatComposer({
     <div className="composer-wrap">
       <form onSubmit={onSubmit} className="composer max-w-4xl mx-auto">
         <textarea
+          ref={textareaRef}
           value={input}
           onChange={(e) => onInputChange(e.target.value)}
           placeholder={mode === 'chat' ? 'Message Providence…' : 'What should I research?'}
@@ -84,28 +111,54 @@ export function ChatComposer({
               loading={modelsLoading}
               disabled={disabled}
             />
-            <label className="toolbar-select" title="Choose chat or research">
-              <span className="sr-only">Mode</span>
-              <select value={mode} onChange={(e) => onModeChange(e.target.value as ComposerMode)} disabled={disabled}>
-                <option value="chat">Chat</option>
-                <option value="research">Research</option>
-              </select>
-              <ChevronDown size={14} />
-            </label>
+            <div className="mode-segment" role="tablist" aria-label="Choose chat or research">
+              {(['chat', 'research'] as ComposerMode[]).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  role="tab"
+                  aria-selected={mode === m}
+                  disabled={disabled}
+                  onClick={() => onModeChange(m)}
+                  className={`mode-segment-btn${mode === m ? ' active' : ''}`}
+                >
+                  {m === 'chat' ? 'Chat' : 'Research'}
+                </button>
+              ))}
+            </div>
             {mode === 'research' && (
               <>
-                <label className="toolbar-select subtle-select">
-                  <span className="sr-only">Research depth</span>
-                  <select value={researchMode} onChange={(e) => onResearchModeChange(e.target.value)} disabled={disabled}>
-                    <option value="quick">Quick</option>
-                    <option value="standard">Standard</option>
-                    <option value="deep">Deep</option>
-                    <option value="academic">Academic</option>
-                    <option value="recency">Recency</option>
-                    <option value="compare">Compare</option>
-                  </select>
-                  <ChevronDown size={14} />
-                </label>
+                <div className="mode-segment subtle" role="tablist" aria-label="Research depth">
+                  {(['standard', 'deep'] as ResearchDepth[]).map((d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      role="tab"
+                      aria-selected={researchDepth === d}
+                      disabled={disabled}
+                      onClick={() => onResearchDepthChange(d)}
+                      className={`mode-segment-btn${researchDepth === d ? ' active' : ''}`}
+                      title={d === 'standard' ? 'Default iterative research' : 'Heavy analysis with thinker + triangulation'}
+                    >
+                      {d === 'standard' ? 'Standard' : 'Deep'}
+                    </button>
+                  ))}
+                </div>
+                <div className="lens-pills" aria-label="Research lenses">
+                  {LENS_META.map(({ key, label, hint }) => (
+                    <button
+                      key={key}
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => onLensesChange({ ...lenses, [key]: !lenses[key] })}
+                      className={`lens-pill${lenses[key] ? ' active' : ''}`}
+                      aria-pressed={lenses[key]}
+                      title={hint}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
                 <label className="toolbar-select subtle-select">
                   <span className="sr-only">Autonomy</span>
                   <select value={autonomy} onChange={(e) => onAutonomyChange(e.target.value)} disabled={disabled}>

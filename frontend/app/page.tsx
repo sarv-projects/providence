@@ -11,9 +11,20 @@ import {
   LoadingDots,
   PlanEditor,
   ChatComposer,
+  EMPTY_LENSES,
 } from '@/components'
-import type { ChatMessage, ApprovalRequest, ResearchPlanPayload } from '@/components'
+import type { ChatMessage, ApprovalRequest, ResearchPlanPayload, ResearchDepth, ResearchLenses } from '@/components'
 import { apiFetch, apiGet, apiPost, apiPut, type ProgressSnapshot } from '@/lib/api'
+
+// Legacy depth modes resolve to standard + an implied lens (mirrors
+// src/engine/modes.py LEGACY_LENS_MODES).
+const LEGACY_DEPTH: Record<string, { depth: ResearchDepth; lens: keyof ResearchLenses | null }> = {
+  recency: { depth: 'standard', lens: 'recency' },
+  academic: { depth: 'deep', lens: 'academic' },
+  compare: { depth: 'standard', lens: 'compare' },
+  quick: { depth: 'standard', lens: null },
+  'ultra-long': { depth: 'deep', lens: null },
+}
 
 export default function Home() {
   const [messages, setMessages] = useState<ChatMessage[]>([
@@ -27,7 +38,8 @@ export default function Home() {
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [mode, setMode] = useState<'chat' | 'research'>('chat')
-  const [researchMode, setResearchMode] = useState('standard')
+  const [researchDepth, setResearchDepth] = useState<ResearchDepth>('standard')
+  const [lenses, setLenses] = useState<ResearchLenses>({ ...EMPTY_LENSES })
   const [autonomy, setAutonomy] = useState('L1')
   const [selectedModel, setSelectedModel] = useState('')
   const [maxCost, setMaxCost] = useState(5)
@@ -59,11 +71,24 @@ export default function Home() {
     setActiveJobId(jobId)
     let finished = false
     let jobError = ''
-    for (let i = 0; i < 900 && !finished; i++) {
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(resolve, 1000)
-        signal.addEventListener('abort', () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')) }, { once: true })
+    const sleep = (ms: number) =>
+      new Promise<void>((resolve, reject) => {
+        if (signal.aborted) {
+          reject(new DOMException('Aborted', 'AbortError'))
+          return
+        }
+        const timer = setTimeout(() => {
+          signal.removeEventListener('abort', onAbort)
+          resolve()
+        }, ms)
+        const onAbort = () => {
+          clearTimeout(timer)
+          reject(new DOMException('Aborted', 'AbortError'))
+        }
+        signal.addEventListener('abort', onAbort, { once: true })
       })
+    for (let i = 0; i < 900 && !finished; i++) {
+      await sleep(1000)
       let snap: ProgressSnapshot = {}
       try {
         if (jobId) {
@@ -184,6 +209,9 @@ export default function Home() {
           model: selectedModel || undefined,
           max_cost_usd: maxCost,
           max_iterations: maxIterations,
+          recency: lenses.recency,
+          academic: lenses.academic,
+          compare: lenses.compare,
         }
       )
       setPendingPlan(null)
@@ -217,9 +245,25 @@ export default function Home() {
   }
 
   useEffect(() => {
-    apiGet<{ mode?: string; autonomy?: string; default_model?: string; max_cost?: number; max_iterations?: number }>('/api/settings')
+    apiGet<{ mode?: string; autonomy?: string; default_model?: string; max_cost?: number; max_iterations?: number; lens_recency?: boolean; lens_academic?: boolean; lens_compare?: boolean }>('/api/settings')
       .then((data) => {
-        if (data?.mode) setResearchMode(data.mode)
+        // Legacy stored modes (recency/academic/compare/...) migrate to
+        // depth + implied lens so old settings keep working.
+        let baseLenses = {
+          recency: !!data?.lens_recency,
+          academic: !!data?.lens_academic,
+          compare: !!data?.lens_compare,
+        }
+        if (data?.mode) {
+          const legacy = LEGACY_DEPTH[data.mode]
+          if (legacy) {
+            setResearchDepth(legacy.depth)
+            if (legacy.lens) baseLenses = { ...baseLenses, [legacy.lens]: true }
+          } else if (data.mode === 'deep' || data.mode === 'standard') {
+            setResearchDepth(data.mode)
+          }
+        }
+        setLenses(baseLenses)
         if (data?.autonomy) setAutonomy(data.autonomy)
         if (data?.default_model) setSelectedModel(data.default_model)
         if (data?.max_cost != null) setMaxCost(data.max_cost)
@@ -321,9 +365,11 @@ export default function Home() {
             buffer = parts.pop() || ''
             for (const part of parts) {
               const line = part.trim()
-              if (!line.startsWith('data: ')) continue
+              // Tolerate both "data: {...}" and "data:{...}" framings.
+              if (!line.startsWith('data:')) continue
               try {
-                const evt = JSON.parse(line.slice(6))
+                const payload = line.slice(5).trim()
+                const evt = JSON.parse(payload)
                 if (evt.type === 'token') {
                   acc += evt.text || ''
                   setMessages((prev) => {
@@ -377,11 +423,14 @@ export default function Home() {
           setProgressStatus('Generating editable research plan…')
           const planRes = await apiPost<ResearchPlanPayload>('/api/research/plans', {
             query: userText,
-            mode: researchMode,
+            mode: researchDepth,
             autonomy,
             model: selectedModel || undefined,
             max_cost_usd: maxCost,
             max_iterations: maxIterations,
+            recency: lenses.recency,
+            academic: lenses.academic,
+            compare: lenses.compare,
           })
           setPendingPlan(planRes)
           setMessages((prev) => [
@@ -405,13 +454,16 @@ export default function Home() {
 
         const startRes = await apiPost<{ job_id?: string }>('/api/research', {
           query: userText,
-          mode: researchMode,
+          mode: researchDepth,
           autonomy,
           background: true,
           skip_clarify: true,
           model: selectedModel || undefined,
           max_cost_usd: maxCost,
           max_iterations: maxIterations,
+          recency: lenses.recency,
+          academic: lenses.academic,
+          compare: lenses.compare,
         })
         const jobId = startRes?.job_id || ''
         pollAbortRef.current = new AbortController()
@@ -500,8 +552,10 @@ export default function Home() {
           disabled={isLoading}
           mode={mode}
           onModeChange={setMode}
-          researchMode={researchMode}
-          onResearchModeChange={setResearchMode}
+          researchDepth={researchDepth}
+          onResearchDepthChange={setResearchDepth}
+          lenses={lenses}
+          onLensesChange={setLenses}
           autonomy={autonomy}
           onAutonomyChange={setAutonomy}
           planFirst={planFirst}

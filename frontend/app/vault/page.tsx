@@ -9,6 +9,8 @@ interface VaultResult {
   url?: string
   title?: string
   content?: string
+  snippet?: string
+  full_text?: string
   query?: string
 }
 
@@ -47,7 +49,9 @@ export default function VaultPage() {
         {/* Results List */}
         <div className="space-y-4">
           {error && <div className="notice notice-error">{error}</div>}
-          {results.map((r, i) => (
+          {results.map((r, i) => {
+            const previewText = r.content || r.snippet || r.full_text || ''
+            return (
             <div
               key={i}
               className="card-hover rounded-xl border p-6 shadow-sm"
@@ -62,11 +66,12 @@ export default function VaultPage() {
                 </a>
               )}
               <p className="whitespace-pre-wrap text-sm leading-relaxed opacity-90">
-                {r.content ? r.content.slice(0, 500) : 'No preview available'}
-                {r.content && r.content.length > 500 ? '...' : ''}
+                {previewText ? previewText.slice(0, 500) : 'No preview available'}
+                {previewText && previewText.length > 500 ? '...' : ''}
               </p>
             </div>
-          ))}
+            )
+          })}
         </div>
 
         {searched && !loading && results.length === 0 && (

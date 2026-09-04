@@ -105,11 +105,20 @@ class QdrantStore:
                 vec_float.extend([0.0] * (self.vector_dim - len(vec_float)))
             vec_float = vec_float[:self.vector_dim]
 
+            # Qdrant point IDs must be ints or UUIDs — derive a stable UUID
+            # from the chunk id (raw md5-hex / scoped strings are rejected).
+            import uuid as _uuid
+            try:
+                _uuid.UUID(str(c.id))
+                point_id = str(c.id)
+            except (ValueError, AttributeError, TypeError):
+                point_id = str(_uuid.uuid5(_uuid.NAMESPACE_URL, f"providence-chunk:{c.id}"))
             points.append(
                 PointStruct(
-                    id=str(c.id),
+                    id=point_id,
                     vector=vec_float,
                     payload={
+                        "chunk_id": str(c.id),
                         "text": str(c.text),
                         "url": str(meta.get("url", "")),
                         "title": str(meta.get("title", "")),
@@ -155,7 +164,7 @@ class QdrantStore:
 
         return [
             {
-                "id": str(r.id),
+                "id": str(r.payload.get("chunk_id") or r.id),
                 "text": r.payload.get("text", ""),
                 "url": r.payload.get("url", ""),
                 "title": r.payload.get("title", ""),

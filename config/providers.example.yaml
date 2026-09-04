@@ -9,12 +9,14 @@ providers:
     default: true
     models:
       - nemotron-3-ultra-free
-      - hy3-free
       - nemotron-3.5-lightning-free
       - laguna-s-2.1-free
       - mimo-v2.5-free
-      - deepseek-v4-flash-free
+      - muse-spark-1.3-contributor-free
       - big-pickle
+      # NOTE: hy3-free (401, provider-deprecated) and deepseek-v4-flash-free
+      # (listed but completions fail) are dead — DEAD_MODEL_PATTERNS in
+      # src/providers/catalog.py filters them at runtime regardless.
 
   # OpenAI-compatible: https://api.groq.com/openai/v1  (GROQ_API_KEY=gsk_...)
   groq:
@@ -67,19 +69,17 @@ tiers:
     - provider: opencode_free
       model: nemotron-3-ultra-free
     - provider: opencode_free
-      model: hy3-free
-    - provider: opencode_free
       model: nemotron-3.5-lightning-free
     - provider: opencode_free
       model: laguna-s-2.1-free
+    - provider: opencode_free
+      model: muse-spark-1.3-contributor-free
 
   strong:
     - provider: opencode_free
       model: nemotron-3-ultra-free
     - provider: opencode_free
-      model: hy3-free
-    - provider: opencode_free
-      model: deepseek-v4-flash-free
+      model: muse-spark-1.3-contributor-free
     - provider: opencode_free
       model: big-pickle
 

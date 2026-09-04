@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Optional
 
-from .catalog import load_catalog, CatalogConfig, ProviderSlot
+from .catalog import load_catalog, CatalogConfig, ProviderSlot, is_dead_model
 
 # Known OpenAI-compatible /models endpoints
 _MODELS_PATH = {
@@ -30,7 +30,10 @@ _MODELS_PATH = {
 
 
 def _http_get_json(url: str, api_key: str = "", timeout: float = 20.0) -> Any:
+    from .catalog import _zen_headers
     headers = {"User-Agent": "AutonomousResearchAgent/1.0", "Accept": "application/json"}
+    if "opencode.ai" in url:
+        headers.update(_zen_headers())
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     req = urllib.request.Request(url, headers=headers)
@@ -123,7 +126,7 @@ def list_catalog_models(discover_remote: bool = True) -> list[dict]:
         seen: set[str] = set()
         ordered: list[str] = []
         for m in configured + discovered:
-            if m and m not in seen:
+            if m and m not in seen and not is_dead_model(m):
                 seen.add(m)
                 ordered.append(m)
 
@@ -253,12 +256,13 @@ def probe_model(
 
 def probe_zen_free(timeout: float = 45.0) -> list[dict]:
     """Probe every free Zen model — discovered live, YAML as fallback."""
+    from .catalog import is_dead_model as _is_dead
     cat = load_catalog()
     slot = cat.providers.get("opencode_free")
-    models = list(slot.models) if slot else []
+    models = [m for m in (list(slot.models) if slot else []) if _is_free_model(m) and not _is_dead(m)]
     if not models:
         models = ["nemotron-3-ultra-free", "nemotron-3.5-lightning-free",
-                  "deepseek-v4-flash-free", "big-pickle"]
+                  "muse-spark-1.3-contributor-free", "big-pickle"]
     return [probe_model("opencode_free", m, timeout=timeout) for m in models]
 
 

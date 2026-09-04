@@ -32,14 +32,14 @@ def _corpus(state: ResearchState) -> str:
     parts: list[str] = []
     # Run-wide accumulated chunks (all iterations) — primary source
     for c in state.get("run_corpus") or []:
-        parts.append(c.get("text") or "")
+        parts.append((c.get("text") or "") if isinstance(c, dict) else "")
     for c in state.get("retrieved_chunks") or []:
-        parts.append(c.get("text") or "")
+        parts.append((c.get("text") or "") if isinstance(c, dict) else "")
     for p in (state.get("extracted_pages") or [])[:25]:
-        parts.append((p.get("content") or "")[:3000])
+        parts.append(((p.get("content") or "")[:3000]) if isinstance(p, dict) else "")
     for r in (state.get("search_results") or [])[:30]:
-        parts.append((r.get("raw_content") or r.get("content") or "")[:1500])
-    parts.extend(state.get("findings") or [])
+        parts.append(((r.get("raw_content") or r.get("content") or "")[:1500]) if isinstance(r, dict) else "")
+    parts.extend(str(f) for f in (state.get("findings") or []))
     return " ".join(parts).lower()
 
 
@@ -80,10 +80,14 @@ def _flag_value_conflicts(state: ResearchState) -> list[str]:
         return []
 
     def _subject(c: dict) -> tuple:
+        if not isinstance(c, dict):
+            return ()
         words = _re.findall(r"[a-zA-Z]{4,}", (c.get("text") or "").lower())
         return tuple(sorted(words[:4]))
 
     def _values(c: dict) -> list[str]:
+        if not isinstance(c, dict):
+            return []
         return _re.findall(r"\b\d+(?:\.\d+)?\s*(?:%|MW|GHz|GB|TB|GB/s|million|billion)?\b", (c.get("text") or ""))
 
     flagged: list[str] = []
@@ -108,12 +112,17 @@ def _flag_value_conflicts(state: ResearchState) -> list[str]:
             f"({', '.join(sorted(value_map.keys())[:4])}): reconcile against primary sources"
         )
         flagged.append(note)
-        for i in idxs:
-            row = state.get("adjudicated_claims") or []
-            if i < len(row) and row[i].get("status") == "supported":
-                row[i]["status"] = "contested"
-                row[i]["score"] = min(float(row[i].get("score") or 0.5), 0.5)
-                state.setdefault("contested_claims", []).append(row[i])
+        # Match adjudicated rows by claim TEXT, not by index: the adjudicated
+        # list can differ in order/length from state["claims"], so positional
+        # indexing flipped the wrong claim to contested.
+        texts = {str((claims[i].get("text") if isinstance(claims[i], dict) else "") or "") for i in idxs}
+        for row_item in state.get("adjudicated_claims") or []:
+            if not isinstance(row_item, dict):
+                continue
+            if str(row_item.get("text") or "") in texts and row_item.get("status") == "supported":
+                row_item["status"] = "contested"
+                row_item["score"] = min(float(row_item.get("score") or 0.5), 0.5)
+                state.setdefault("contested_claims", []).append(row_item)
     if flagged:
         debt = list(state.get("research_debt") or [])
         for n in flagged:
@@ -255,6 +264,8 @@ def devil_advocate_gather(state: ResearchState) -> ResearchState:
     ]
     # Target top claims
     for c in claims[:3]:
+        if not isinstance(c, dict):
+            continue
         ct = (c.get("text") or "")[:100]
         if ct:
             counter_queries.append(f"{ct[:80]} criticism OR limitation")

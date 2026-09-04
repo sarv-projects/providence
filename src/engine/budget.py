@@ -15,6 +15,14 @@ def check_budgets(state: dict) -> tuple[bool, str]:
     if not budgets:
         return True, ""
 
+    # Iterations — enforced here too so non-graph callers (temporal
+    # activities, evals) cannot loop unbounded on stale flags.
+    iteration = int(state.get("iteration") or 0)
+    _max_iter = state.get("max_iterations")
+    _max_iter = int(_max_iter) if _max_iter is not None else 0
+    if _max_iter > 0 and iteration >= _max_iter:
+        return False, f"Iteration budget exceeded ({iteration} >= {_max_iter})"
+
     # Time
     started = float(budgets.get("started_at") or 0)
     max_time = int(budgets.get("max_time_s") or 0)
@@ -118,6 +126,10 @@ def sync_cost_from_metrics(state: dict) -> None:
 
 def force_complete(state: dict, reason: str) -> dict:
     state["needs_more_research"] = False
+    # Clear loop-driving flags or the graph takes another gather/adversary
+    # round after the budget is already exhausted.
+    state["socratic_reopen"] = False
+    state["replan"] = False
     state["status"] = f"Budget stop: {reason}"
     state["gaps"] = list(state.get("gaps") or []) + [f"Budget: {reason}"]
     return state

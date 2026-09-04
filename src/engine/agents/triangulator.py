@@ -134,21 +134,30 @@ def triangulator(state: ResearchState) -> ResearchState:
     if not _should_triangulate(state):
         return state
 
-    query = state["query"]
+    query = state.get("query", "")
     state["status"] = "Triangulating for bias mitigation..."
     print(f"\n⚖️  [Triangulator] Running adversarial triangulation for: {query[:80]}")
 
     # Build proposition from query + findings
-    findings_summary = "\n".join(state.get("findings", [])[:10])
+    findings_summary = "\n".join(str(f) for f in (state.get("findings") or [])[:10])
     proposition = f"Proposition: {query}\n\nSupporting context:\n{findings_summary[:2000]}"
+
+    # Propagate the run's cost/model context into workers (thread-locals
+    # are not inherited — without this their spend bypasses budgets).
+    from src.llm import fork_run_context, apply_run_context
+    _parent_ctx = fork_run_context()
+
+    def _role_call(system: str, user: str, model: str = "fast") -> str:
+        apply_run_context(_parent_ctx)
+        return _call_llm(system, user, model=model)
 
     # Run all three agents in parallel
     results = {}
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = {
-            executor.submit(_call_llm, PRO_PROMPT, f"Argue FOR: {proposition}", model="fast"): "pro",
-            executor.submit(_call_llm, CON_PROMPT, f"Argue AGAINST: {proposition}", model="fast"): "con",
-            executor.submit(_call_llm, NEUTRAL_PROMPT, f"Present balanced: {proposition}", model="fast"): "neutral",
+            executor.submit(_role_call, PRO_PROMPT, f"Argue FOR: {proposition}"): "pro",
+            executor.submit(_role_call, CON_PROMPT, f"Argue AGAINST: {proposition}"): "con",
+            executor.submit(_role_call, NEUTRAL_PROMPT, f"Present balanced: {proposition}"): "neutral",
         }
         for future in as_completed(futures):
             role = futures[future]
@@ -178,26 +187,40 @@ def triangulator(state: ResearchState) -> ResearchState:
 
     # Enrich state with triangulation results
     bias_score = arbiter.get("bias_score", 5)
-    synthesis = arbiter.get("synthesis", "")
-    common_ground = arbiter.get("common_ground", "")
-
-    # Add balanced perspectives to findings
+    synthesis = arbiter.get("synthesis", "") or ""
+    common_ground = arbiter.get("common_ground", "") or ""
+    # The arbiter LLM sometimes returns nested objects instead of strings —
+    # coerce (dict synthesis used to crash with "unhashable type: 'slice'").
+    if not isinstance(synthesis, str):
+        try:
+            import json as _json
+            synthesis = _json.dumps(synthesis)[:2000]
+        except Exception:
+            synthesis = str(synthesis)[:2000]
+    if not isinstance(common_ground, str):
+        common_ground = str(common_ground)[:1000]
+    try:
+        bias_score = float(bias_score)
+    except (TypeError, ValueError):
+        bias_score = 5
+    findings = list(state.get("findings") or [])
     if synthesis:
-        state["findings"].append(f"[Bias-Mitigated Synthesis] {synthesis[:500]}")
+        findings.append(f"[Bias-Mitigated Synthesis] {synthesis[:500]}")
     if common_ground:
-        state["findings"].append(f"[Common Ground] {common_ground[:300]}")
+        findings.append(f"[Common Ground] {common_ground[:300]}")
 
     # Add pro/con summaries
     for role, label in [("pro", "Pro"), ("con", "Con"), ("neutral", "Neutral")]:
         text = results.get(role, "")
         if text:
-            state["findings"].append(f"[{label} Perspective] {text[:300]}")
+            findings.append(f"[{label} Perspective] {text[:300]}")
 
     # Store triangulation metadata
-    state["findings"].append(f"[Bias Assessment] Score: {bias_score}/10")
-    for cred in arbiter.get("credibility", []):
+    findings.append(f"[Bias Assessment] Score: {bias_score}/10")
+    for cred in arbiter.get("credibility") or []:
         if isinstance(cred, dict):
-            state["findings"].append(f"[Credibility] {cred.get('perspective','')}: {cred.get('assessment','')[:150]}")
+            findings.append(f"[Credibility] {cred.get('perspective','')}: {cred.get('assessment','')[:150]}")
+    state["findings"] = findings
 
     print(f"  Bias score: {bias_score}/10")
     print(f"  Synthesis: {len(synthesis)} chars")

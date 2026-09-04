@@ -31,11 +31,19 @@ def _is_pdf_url(url: str) -> bool:
 def _download(url: str) -> str:
     """Download a URL to a temp file; returns local path (caller cleans up)."""
     import tempfile
+    try:
+        from ..urlguard import bounded_read, is_safe_url
+    except ImportError:  # pragma: no cover - guard module always present
+        bounded_read = None  # type: ignore
+        def is_safe_url(u: str) -> bool:  # type: ignore
+            return u.startswith(("http://", "https://"))
+    if not is_safe_url(url):
+        raise ValueError(f"Blocked URL (SSRF guard): {url}")
     req = urllib.request.Request(
         url, headers={"User-Agent": "AutonomousResearchAgent/1.0"}
     )
     with urllib.request.urlopen(req, timeout=30.0) as resp:
-        data = resp.read()
+        data = bounded_read(resp) if bounded_read else resp.read()
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     tmp.write(data)
     tmp.close()

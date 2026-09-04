@@ -173,11 +173,12 @@ export function ProgressBanner({
               {recentThoughts.map((t, i) => {
                 const meta = KIND_STYLE[t.kind || ''] || { icon: CircleDot, className: 'opacity-70' }
                 const Icon = meta.icon
+                const text = t.text || ''
                 return (
                   <div key={i} className="flex items-start gap-1.5 text-[11px] opacity-90">
                     <Icon size={11} className={`mt-0.5 shrink-0 ${meta.className}`} />
-                    <span className="truncate">
-                      <span className="font-medium opacity-60">[{t.kind || 'note'}]</span> {t.text || ''}
+                    <span className="min-w-0 break-words" title={text}>
+                      <span className="font-medium opacity-60">[{t.kind || 'note'}]</span> {text}
                     </span>
                   </div>
                 )

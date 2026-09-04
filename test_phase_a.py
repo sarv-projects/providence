@@ -85,8 +85,27 @@ def test_no_auth_header_for_empty_key():
         headers_used.append(kw.get("data", b""))
         raise Exception("captured")
 
-    # The provider correctly omits Authorization when api_keys is empty
-    assert p.api_keys == [] or p.api_keys == [""] or all(k == "" for k in p.api_keys) or True
+    # The provider must omit Authorization when api_keys is empty.
+    # Capture the real urllib Request via a stubbed urlopen (no network).
+    captured = {}
+
+    class _FakeResp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b'{"choices": [{"message": {"content": "ok"}}], "usage": {}}'
+
+    def _fake_urlopen(req, timeout=None):
+        captured["headers"] = dict(req.header_items())
+        return _FakeResp()
+
+    urllib.request.urlopen = _fake_urlopen
+    try:
+        p.complete([{"role": "user", "content": "hi"}], model="test")
+    finally:
+        urllib.request.urlopen = original_urlopen
+    assert "Authorization" not in (captured.get("headers") or {}), \
+        f"empty key must not send Authorization, got: {captured.get('headers')}"
+    assert p.api_keys == [] or p.api_keys == [""] or all(k == "" for k in p.api_keys)
     # Just verify the setting is correct
     print("7/8 empty key → no Authorization header OK")
 

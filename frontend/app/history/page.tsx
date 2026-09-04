@@ -2,7 +2,9 @@
 
 import { useState, useEffect } from 'react'
 import { Search, X, History as HistoryIcon, FileText as FileIcon } from 'lucide-react'
-import { apiGet } from '@/lib/api'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import { apiGet, safeHttpUrl } from '@/lib/api'
 import { AppShell } from '@/components'
 
 interface HistoryItem {
@@ -57,6 +59,15 @@ export default function HistoryPage() {
       setError(err.message || 'Failed to open report')
     }
   }
+
+  useEffect(() => {
+    if (!preview) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setPreview(null)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [preview])
 
   const filteredHistory = history.filter((item) => item.query.toLowerCase().includes(filter.toLowerCase()))
   const filteredReports = reports.filter((item) => item.name.toLowerCase().includes(filter.toLowerCase()))
@@ -122,10 +133,17 @@ export default function HistoryPage() {
         )}
 
         {preview && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
+            onClick={() => setPreview(null)}
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Preview ${preview.name}`}
+          >
             <div
               className="flex max-h-[85vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border shadow-2xl"
               style={{ borderColor: 'var(--border)', background: 'var(--surface)', color: 'var(--foreground)' }}
+              onClick={(e) => e.stopPropagation()}
             >
               <div className="flex items-center justify-between border-b px-6 py-4" style={{ borderColor: 'var(--border)' }}>
                 <h3 className="truncate pr-4 font-semibold">{preview.name}</h3>
@@ -133,7 +151,24 @@ export default function HistoryPage() {
                   Close
                 </button>
               </div>
-              <pre className="flex-1 overflow-y-auto whitespace-pre-wrap p-6 text-xs">{preview.content}</pre>
+              <div className="markdown-body flex-1 overflow-y-auto p-6">
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    a: ({ href, children }) => {
+                      const safe = safeHttpUrl(typeof href === 'string' ? href : undefined)
+                      if (!safe) return <span>{children}</span>
+                      return (
+                        <a href={safe} target="_blank" rel="noopener noreferrer">
+                          {children}
+                        </a>
+                      )
+                    },
+                  }}
+                >
+                  {preview.content.slice(0, 100000)}
+                </ReactMarkdown>
+              </div>
             </div>
           </div>
         )}

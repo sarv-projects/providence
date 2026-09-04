@@ -19,12 +19,17 @@ providers:
     models:
       - nemotron-3-ultra-free         # live 200 no-key, clean JSON
       - nemotron-3.5-lightning-free   # live 200 no-key
-      - laguna-s-2.1-free             # documented free; may 503
       - mimo-v2.5-free                # documented free; may 429
-      - deepseek-v4-flash-free        # documented free; may 429
       - big-pickle                    # live free (reasoning)
-      - muse-spark-1.2-contributor-free  # live free (data-use tradeoff)
+      - muse-spark-1.2-contributor-free  # live free (Responses API /v1/responses)
+      - muse-spark-1.3-contributor-free  # live free (Responses API /v1/responses)
       - ling-3.0-flash-fin-free          # live free
+      # NOTE: deepseek-v4-flash-free removed — listed on /models but
+      # completions fail; filtered at runtime by DEAD_MODEL_PATTERNS too.
+      # NOTE: laguna-s-2.1-free removed — absent from the official free list,
+      # consistent 503; also in DEAD_MODEL_PATTERNS.
+      # NOTE: deepseek-v4-flash-free removed — listed on /models but
+      # completions fail; filtered at runtime by DEAD_MODEL_PATTERNS too.
 
   # ── Groq (https://console.groq.com/docs/openai · /docs/models) ──
   # OpenAI-compatible base: https://api.groq.com/openai/v1
@@ -145,17 +150,15 @@ tiers:
     - provider: opencode_free
       model: nemotron-3.5-lightning-free
     - provider: opencode_free
-      model: laguna-s-2.1-free
-    - provider: opencode_free
       model: mimo-v2.5-free
     - provider: opencode_free
-      model: deepseek-v4-flash-free
+      model: muse-spark-1.3-contributor-free
 
   strong:
     - provider: opencode_free
       model: nemotron-3-ultra-free
     - provider: opencode_free
-      model: deepseek-v4-flash-free
+      model: muse-spark-1.3-contributor-free
     - provider: opencode_free
       model: big-pickle
     - provider: opencode_free

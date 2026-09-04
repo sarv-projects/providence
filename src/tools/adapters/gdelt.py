@@ -65,34 +65,46 @@ def _throttle() -> bool:
     Non-blocking: if another GDELT call happened within the cooldown window
     (this process or any other via the lock file), returns False and the
     caller skips this round — the researcher will retry next iteration.
+
+    The lock file stores WALL-CLOCK time (time.time): the in-process fast
+    path uses monotonic, but monotonic resets on reboot while the file
+    persists — mixing them bricked GDELT for hours after a restart.
+    All file I/O goes through the flock'd fd (O_NOFOLLOW) so a symlinked
+    lock path cannot truncate arbitrary files.
     """
     global _last_call
-    now = time.monotonic()
+    now_mono = time.monotonic()
     with _lock:
-        if now - _last_call < _MIN_CALL_INTERVAL_S:
+        if now_mono - _last_call < _MIN_CALL_INTERVAL_S:
             return False
         # Cross-process check under flock
         if _HAS_FCNTL:
+            flags = os.O_CREAT | os.O_RDWR
+            nofollow = getattr(os, "O_NOFOLLOW", 0)
             try:
-                fd = os.open(_lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+                fd = os.open(_lock_path, flags | nofollow, 0o644)
+            except OSError:
+                # Symlink / unsafe lock path — fail closed for this round.
+                return False
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
                 try:
-                    fcntl.flock(fd, fcntl.LOCK_EX)
-                    try:
-                        with open(_lock_path, "r") as f:
-                            last = float(f.read().strip() or "0")
-                    except (OSError, ValueError):
-                        last = 0.0
-                    if time.monotonic() - last < _MIN_CALL_INTERVAL_S:
-                        return False
-                    with open(_lock_path, "w") as f:
-                        f.write(str(time.monotonic()))
-                finally:
-                    try:
-                        fcntl.flock(fd, fcntl.LOCK_UN)
-                    finally:
-                        os.close(fd)
+                    with os.fdopen(os.dup(fd), "r") as f:
+                        last = float(f.read().strip() or "0")
+                except (OSError, ValueError):
+                    last = 0.0
+                if time.time() - last < _MIN_CALL_INTERVAL_S:
+                    return False
+                os.lseek(fd, 0, os.SEEK_SET)
+                os.ftruncate(fd, 0)
+                os.write(fd, str(time.time()).encode("ascii"))
             except OSError:
                 pass
+            finally:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(fd)
         _last_call = time.monotonic()
     return True
 
@@ -149,9 +161,14 @@ def gdelt_search(query: str, max_results: int = 6, timespan: str = "1y") -> List
         return []  # another process called GDELT recently — retry next iteration
     try:
         q = urllib.parse.quote(_sanitize_query(query))
+        # timespan is interpolated into the GDELT query string — validate it
+        # against the documented shape (digits + unit) so a caller cannot
+        # inject extra &-joined parameters.
+        import re as _re
+        span = timespan if _re.fullmatch(r"\d+[a-zA-Z]+", timespan or "") else "1y"
         params = (
             f"query={q}&mode=artlist&format=json&maxrecords={min(max(max_results, 1), 25)}"
-            f"&sort=datedesc&timespan={timespan}"
+            f"&sort=datedesc&timespan={urllib.parse.quote(span)}"
         )
         url = f"https://api.gdeltproject.org/api/v2/doc/doc?{params}"
         text = _fetch(url)

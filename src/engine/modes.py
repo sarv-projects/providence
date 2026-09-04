@@ -149,3 +149,48 @@ def load_modes(config_path: Optional[str] = None) -> ModeRegistry:
 def get_mode(registry: ModeRegistry, name: str) -> Mode:
     """Get a mode by name, falling back to standard."""
     return registry.modes.get(name, registry.modes.get("standard", Mode()))
+
+
+# ── Research lenses (combinable toggles) ─────────────────────────────
+# The UI offers Chat / Research, with Research depth = standard | deep and
+# three orthogonal toggles: recency, academic, compare. Each lens maps to
+# the mode_flags the agents already consume (researcher query rewriting,
+# planner outline hints, synthesizer structure).
+LENSES = ("recency", "academic", "compare")
+
+# Legacy mode names kept for CLI/API back-compat: each maps to a base depth
+# mode plus the lens flag it used to imply. Academic maps to deep (both use
+# the accurate dial with thinker enabled); recency/compare map to standard
+# (both used the balanced dial).
+LEGACY_LENS_MODES: dict[str, tuple[str, dict[str, bool]]] = {
+    "recency": ("standard", {"recency": True}),
+    "academic": ("deep", {"academic": True}),
+    "compare": ("standard", {"compare": True}),
+}
+
+
+def normalize_lenses(lenses: dict | None) -> dict[str, bool]:
+    """Coerce a lens mapping to {recency, academic, compare} bools."""
+    lenses = lenses or {}
+    return {name: bool(lenses.get(name, False)) for name in LENSES}
+
+
+def resolve_mode(name: str) -> tuple[str, dict[str, bool]]:
+    """Split a mode name into (base_depth_mode, implied_lenses).
+
+    Legacy lens-modes map to standard + their lens; everything else passes
+    through with no implied lenses. Unknown names still fall back to
+    standard downstream via get_mode().
+    """
+    base, implied = LEGACY_LENS_MODES.get(name or "", (name or "standard", {}))
+    return base, normalize_lenses(implied)
+
+
+def merge_lenses(*lens_dicts: dict | None) -> dict[str, bool]:
+    """OR-merge lens mappings (request > settings > legacy-implied)."""
+    merged = normalize_lenses(None)
+    for d in lens_dicts:
+        for name in LENSES:
+            if d and d.get(name):
+                merged[name] = True
+    return merged

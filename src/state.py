@@ -43,6 +43,10 @@ class ResearchState(TypedDict):
     run_id: str
     chunks_ingested: int
     retrieved_chunks: list[dict]
+    # Full-text corpus of pages actually fetched this run (researcher_gather
+    # accumulates; compiler/adjudicator/evidence read). Declared here so the
+    # LangGraph schema carries it between nodes instead of dropping it.
+    run_corpus: list[dict]
 
     # --- Factoid Pipeline ---
     factoids: list[dict]     # structured {type, value, confidence, source_quote, source_url, entities, topics}
@@ -147,6 +151,7 @@ def initial_state(query: str, max_iterations: int = 6) -> ResearchState:
         "run_id": uuid.uuid4().hex[:12],
         "chunks_ingested": 0,
         "retrieved_chunks": [],
+        "run_corpus": [],
         "factoids": [],
         "factoid_stats": {},
         "guard_stats": {},

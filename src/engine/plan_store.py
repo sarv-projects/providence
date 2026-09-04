@@ -71,7 +71,10 @@ class PlanStore:
         terminal = ("complete", "rejected", "error")
         expired = [
             pid for pid, p in self._plans.items()
-            if p.status in terminal and (now - p.updated_at) > self.MAX_AGE_S
+            if (p.status in terminal and (now - p.updated_at) > self.MAX_AGE_S)
+            # Abandoned non-terminal plans (crashed L2 flows) also leak —
+            # 2x TTL is generous enough to never touch a live approval.
+            or (p.status not in terminal and (now - p.updated_at) > 2 * self.MAX_AGE_S)
         ]
         for pid in expired:
             del self._plans[pid]

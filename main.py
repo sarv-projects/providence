@@ -113,7 +113,8 @@ def doctor() -> None:
         print(f"  {var:<25} {'set' if os.getenv(var) else '  -'}")
 
     print_section("Modes")
-    print("  chat | quick | standard | deep | recency | academic | compare | ultra-long")
+    print("  chat | standard | deep  (+ lenses: --recency --academic --compare)")
+    print("  legacy aliases: quick, recency, academic, compare, ultra-long")
     print()
 
 
@@ -200,7 +201,7 @@ def chat(mode: str = "chat") -> None:
             print(f"\n  Error: {e}\n")
 
 
-def _run_research(query: str, mode: str = "standard", autonomy: str = "L1") -> None:
+def _run_research(query: str, mode: str = "standard", autonomy: str = "L1", lenses: dict | None = None) -> None:
     """Run multi-agent research with progressive output display."""
     from src.engine.modes import load_modes, get_mode
     registry = load_modes()
@@ -209,11 +210,14 @@ def _run_research(query: str, mode: str = "standard", autonomy: str = "L1") -> N
     print_header(f"RESEARCH: {query}")
     print(f"  Mode: {mode} ({mode_config.description})")
     print(f"  Autonomy: {autonomy}")
+    on = [k for k, v in (lenses or {}).items() if v]
+    if on:
+        print(f"  Lenses: {', '.join(on)}")
     print(f"  Budget: {mode_config.budgets.max_iterations} iters, ${mode_config.budgets.max_cost_usd:.2f} max")
     start = time.time()
 
     try:
-        result = run_research(query, mode=mode, autonomy=autonomy)
+        result = run_research(query, mode=mode, autonomy=autonomy, lenses=lenses)
         elapsed = time.time() - start
 
         print_header("RESEARCH COMPLETE")
@@ -336,7 +340,7 @@ def print_usage() -> None:
     print("  uv run python main.py worker          # Temporal durable worker")
     print("  uv run python main.py --history")
     print()
-    print("Modes: chat | quick | standard | deep | recency | academic | compare | ultra-long")
+    print("Modes: chat | standard | deep  (+ --recency --academic --compare lenses)")
     print("Autonomy: --autonomy L1|L2|L3")
     print()
     print("Eval suites: component | system | all")
@@ -437,6 +441,7 @@ def main() -> None:
 
     mode = "standard"
     autonomy = "L1"
+    lenses = {"recency": False, "academic": False, "compare": False}
     query_parts = []
     i = 0
     while i < len(remaining):
@@ -446,14 +451,25 @@ def main() -> None:
         elif remaining[i] == "--autonomy" and i + 1 < len(remaining):
             autonomy = remaining[i + 1].upper()
             i += 2
+        elif remaining[i] in ("--recency", "--academic", "--compare"):
+            lenses[remaining[i][2:]] = True
+            i += 1
         else:
             query_parts.append(remaining[i])
             i += 1
 
+    # Legacy lens-modes resolve to standard + their implied lens.
+    from src.engine.modes import resolve_mode, merge_lenses
+    _base, _implied = resolve_mode(mode)
+    if _base != mode:
+        print(f"  Note: --mode {mode} is now a lens toggle → depth '{_base}' + {mode} lens.")
+    mode = _base
+    lenses = merge_lenses(_implied, lenses)
+
     query = " ".join(query_parts)
     if not query:
         print("Error: Please provide a research topic.")
-        print('Usage: uv run python main.py research "your topic" [--mode standard] [--autonomy L1]')
+        print('Usage: uv run python main.py research "your topic" [--mode standard|deep] [--autonomy L1] [--recency] [--academic] [--compare]')
         sys.exit(1)
 
     similar = find_similar(query)
@@ -464,7 +480,7 @@ def main() -> None:
             print(f"    Report: {s.get('report_path', 'N/A')}")
         print()
 
-    _run_research(query, mode=mode, autonomy=autonomy)
+    _run_research(query, mode=mode, autonomy=autonomy, lenses=lenses)
 
 
 if __name__ == "__main__":

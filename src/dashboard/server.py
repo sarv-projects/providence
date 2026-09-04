@@ -93,7 +93,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.end_headers()
         try:
-            while True:
+            # Bound the stream: an undisconnect-detected client otherwise
+            # leaks a ThreadingHTTPServer thread forever (no finished flag).
+            for _ in range(600):  # ~15 min at 1.5s
                 snap = DEFAULT_METRICS.snapshot()
                 events = [e for e in snap.get("event_log", []) if e.get("ts", 0) > _last_event_ts[0]]
                 for e in events[-10:]:

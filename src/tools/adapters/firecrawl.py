@@ -145,6 +145,12 @@ def firecrawl_scrape(url: str) -> Dict:
     """Scrape a single URL via Firecrawl (self-hosted container, cloud, or native trafilatura)."""
     if not url:
         return {}
+    try:
+        from ..urlguard import is_safe_url
+        if not is_safe_url(url):
+            return {}
+    except ImportError:
+        pass
 
     base, key = _get_base_and_key()
     if key or _is_self_hosted():
@@ -199,6 +205,12 @@ def firecrawl_map(url: str) -> List[str]:
     """Map out domain sitemap / links via Firecrawl /v2/map."""
     if not url:
         return []
+    try:
+        from ..urlguard import is_safe_url
+        if not is_safe_url(url):
+            return []
+    except ImportError:
+        pass
     base, key = _get_base_and_key()
     try:
         data = _request(base, key, "/v2/map", {"url": url})
